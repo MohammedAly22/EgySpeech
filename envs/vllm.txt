@@ -1,0 +1,4 @@
+# egyspeech-vllm: OpenAI-compatible server for the audio LLM backend
+# (default Qwen/Qwen3-Omni-30B-A3B-Instruct). Only needed for asr.backend=llm.
+vllm>=0.30
+qwen-omni-utils

@@ -1,0 +1,9 @@
+# egyspeech-nemo: NVIDIA NeMo — Streaming Sortformer diarization, TitaNet speaker
+# embeddings, FastConformer/Parakeet ASR. torch is installed first by scripts/install.sh.
+Cython
+packaging
+nemo_toolkit[asr]>=3.0.0
+soundfile>=0.12
+numpy
+pyyaml>=6
+tqdm>=4.66

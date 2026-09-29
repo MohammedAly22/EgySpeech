@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+# secrets
+cookies.txt
+*.cookies
+.env
+# data (lives in $EGYSPEECH_DATA, never in the repo)
+egyspeech_data/
+*.wav
+*.flac
+*.mp3
+*.npy
+*.npz
+.install_local.sh
+.wait*.sh
+.rate.sh

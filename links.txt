@@ -1,0 +1,6 @@
+# EgySpeech input: one YouTube link per line (playlists, channels, single videos).
+# Duplicates across links are removed automatically. Lines starting with # are ignored.
+#
+# https://www.youtube.com/playlist?list=PL...
+# https://www.youtube.com/@channel/videos
+# https://www.youtube.com/watch?v=...

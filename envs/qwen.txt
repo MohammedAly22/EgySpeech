@@ -1,0 +1,8 @@
+# egyspeech-qwen: QwenCleo-ASR (default ASR, Egyptian + code-switching), built on
+# Qwen3-ASR (qwen-asr pins transformers==4.57.6, hence its own env).
+qwen-asr>=0.0.6
+numpy
+soundfile>=0.12
+huggingface_hub
+pyyaml>=6
+tqdm>=4.66

@@ -1,0 +1,35 @@
+# egyspeech (main env): download, separation, VAD/segmentation, quality, gender,
+# alignment, Cohere/LLM transcription clients, balancing, analysis, publishing.
+# torch is installed first by scripts/install.sh (CUDA build picked for the GPU).
+yt-dlp>=2026.8.19
+audio-separator[gpu]>=0.47
+silero-vad>=6.2
+onnxruntime-gpu>=1.20
+torchmetrics[audio]>=1.9
+librosa>=0.11
+soundfile>=0.12
+pyloudnorm>=0.2
+numpy>=2
+scipy>=1.13
+transformers>=5.4,<6
+accelerate>=1.0
+sentencepiece>=0.2
+protobuf>=5
+uroman>=1.3
+sentence-transformers>=5
+scikit-learn>=1.4
+huggingface_hub>=1.3
+datasets>=4
+pandas>=2
+pyarrow>=21
+plotly>=6
+kaleido>=1.0
+openai>=1.60
+requests>=2.32
+pyyaml>=6
+tqdm>=4.66
+rich>=13
+ipykernel>=6
+ipywidgets>=8
+jupyterlab>=4
+pytest>=8

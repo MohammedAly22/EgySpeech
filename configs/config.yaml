@@ -1,0 +1,179 @@
+# ============================================================================
+# EgySpeech pipeline configuration
+# Every step reads this file. Paths may use ${ENV_VAR}.
+# All steps are resumable: finished videos/chunks are skipped on re-runs.
+# ============================================================================
+
+# ---------------------------------------------------------------- paths ----
+work_dir: ${EGYSPEECH_DATA:-/workspace/egyspeech_data}   # everything the pipeline writes
+links_file: links.txt          # YouTube playlist / video / channel URLs, one per line (# comments ok)
+                                # relative paths are resolved against the repo root
+
+# conda envs each step runs in (created by scripts/install.sh)
+envs:
+  conda_dir: ${CONDA_DIR:-/workspace/miniforge3}
+  main: egyspeech
+  nemo: egyspeech-nemo
+  qwen: egyspeech-qwen
+
+# ------------------------------------------------------------- download ----
+download:
+  format: mp3                   # stored audio format of full episodes
+  sample_rate: 24000
+  bitrate: 192k
+  workers: 4                    # parallel yt-dlp downloads
+  min_video_sec: 60             # skip very short videos
+  max_video_sec: 14400          # skip > 4 h (livestream dumps)
+  skip_live: true
+  cookies_file: null            # Netscape cookies.txt if YouTube asks to "confirm you're not a bot"
+  proxy: null
+  sleep_between_sec: 1.0        # politeness delay per worker
+  retries: 5
+
+# ----------------------------------------------------------- separation ----
+# Removes music and sound effects (vocal stem). Chunks with (almost) no music keep
+# the original audio: separation is only used where it is needed.
+separation:
+  enabled: true
+  model: mel_band_roformer_kim_ft_unwa.ckpt   # any audio-separator vocal model filename
+  use_original_below_music_db: -35.0          # music level (dB rel. to speech) under which the raw audio is kept
+  batch_size: 1
+
+# ---------------------------------------------------------- diarization ----
+diarization:
+  model: nvidia/diar_streaming_sortformer_4spk-v2.1   # NeMo Streaming Sortformer (<= 4 speakers per file)
+  # "very high latency" streaming preset = best offline accuracy (units: 80 ms frames)
+  chunk_len: 340
+  chunk_right_context: 40
+  fifo_len: 40
+  spkcache_update_period: 300
+  spkcache_len: 188
+  speaker_threshold: 0.5        # frame belongs to a speaker above this probability
+  other_speaker_threshold: 0.2  # ...and every other speaker must be below this (no overlap)
+
+# ------------------------------------------------------------ segmentation ----
+segmentation:
+  min_sec: 5.0                  # TTS-friendly clip length
+  max_sec: 30.0
+  target_sec: 14.0              # preferred length when several cut plans are possible
+  vad_threshold: 0.5            # Silero VAD speech probability
+  vad_off_threshold: 0.35       # below this = pause
+  min_pause_sec: 0.12           # shortest pause usable as a cut point
+  strong_pause_sec: 0.35        # pauses this long are preferred cut points
+  allow_weak_cuts: true         # if a long turn has no pause, cut at the deepest energy dip between words
+  max_internal_silence_sec: 1.5 # a longer pause splits the turn (no long silences inside a clip)
+  guard_sec: 0.3                # distance kept from any other speaker's speech
+  edge_pad_sec: 0.15            # silence kept before the first / after the last word
+  loudness_lufs: -20.0          # loudness normalization target (ITU-R BS.1770)
+  peak_dbfs: -1.0               # peak ceiling after normalization
+  audio_format: flac            # clip format (lossless)
+  workers: 8                    # parallel videos (CPU: VAD + planning + export)
+
+# ------------------------------------------------------------- storage ----
+# ~2000 h of episodes need roughly: raw MP3 170 GB, vocal stems 190 GB, clips 140 GB.
+storage:
+  delete_vocals_after_segment: false   # frees the vocal stems (re-segmenting then needs `separate` again)
+  delete_rejected_clips: false         # remove audio of clips that fail the quality filter
+
+# -------------------------------------------------------------- quality ----
+quality:
+  workers: 8                    # CPU workers for DNSMOS
+  batch_size: 32                # UTMOS batch
+  speaker_window_sec: 3.0       # TitaNet windows for the single-speaker check
+  speaker_hop_sec: 1.5
+
+# ---------------------------------------------------------------- filter ----
+# Scores are cached: change thresholds and re-run `filter` (seconds).
+filter:
+  min_dnsmos_ovrl: 3.0
+  min_dnsmos_sig: 3.3
+  min_dnsmos_bak: 3.6
+  min_utmos: 2.8
+  min_window_similarity: 0.45   # every 3 s window must match the clip's voice (single speaker)
+  max_clip_ratio: 0.001         # fraction of clipped samples
+  min_speech_ratio: 0.55        # speech / clip duration
+  drop_weak_cuts: false         # true = keep only clips cut at real pauses
+
+# --------------------------------------------------------- transcription ----
+transcription:
+  backend: qwencleo             # qwencleo | cohere | parakeet | llm
+  batch_size: 16
+  language: Arabic              # qwencleo: "Arabic" or null (auto); cohere: uses "ar"
+  qwencleo:
+    model: mohammedaly22/QwenCleo-ASR
+  cohere:
+    model: CohereLabs/cohere-transcribe-arabic-07-2026
+  parakeet:
+    model: nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0   # any NeMo ASR checkpoint
+  llm:
+    url: http://localhost:8000/v1           # OpenAI-compatible endpoint (vLLM)
+    model: Qwen/Qwen3-Omni-30B-A3B-Instruct
+    api_key: EMPTY
+    concurrency: 32
+    temperature: 0.0
+    max_tokens: 1024
+    use_tags: true                          # insert paralinguistic tags inside the transcript
+    system_prompt: |
+      You are an expert transcriber of Egyptian Arabic (Masri) speech.
+      Transcribe the audio verbatim, exactly as spoken, in Egyptian Arabic orthography.
+      Rules:
+      - Write Egyptian dialect words as they are pronounced (e.g. عايز، ازاي، دلوقتي، مش، بقى), never convert to Modern Standard Arabic.
+      - Write English (or other Latin-script) words in Latin script exactly as spoken, e.g. "الـ meeting بتاعنا كان very productive".
+      - Keep fillers and hesitations that are spoken (يعني، اه، امم، ايوه) and repeated words.
+      - Write numbers as words, the way they are spoken.
+      - Do not add diacritics, do not translate, do not summarize, do not add explanations.
+      - Use only these punctuation marks: ، . ؟ !
+      Output ONLY the transcript text.
+    tags_prompt: |
+      Also mark non-verbal and paralinguistic events INSIDE the transcript, at the exact position where they happen,
+      using ONLY these tags: {tags}.
+      Span tags wrap the words they apply to, e.g. [whispering] كلام [/whispering].
+      Use a tag only when the event is clearly audible; never invent events. If there is none, use no tag.
+  tags:
+    events: [laughs, chuckles, sighs, breath, gasps, coughs, clears_throat, sniffs, lip_smack, pause]
+    spans: [whispering, laughing_speech, shouting]
+    styles: [excited, happy, sad, angry, calm, surprised, sarcastic, friendly, serious]   # at most one, at the start
+  # Optional second transcription for agreement filtering (null = off)
+  verify:
+    backend: null               # e.g. cohere
+    max_cer: 0.25               # drop clips whose two transcripts differ more (after normalization)
+  sanity:
+    min_chars_per_sec: 4.0      # catch empty / truncated transcripts
+    max_chars_per_sec: 28.0     # catch hallucinated / looping transcripts
+    min_arabic_ratio: 0.5       # letters that are Arabic (drops mostly-English clips)
+
+# ------------------------------------------------------------ alignment ----
+alignment:
+  model: MahmoudAshraf/mms-300m-1130-forced-aligner   # MMS CTC, romanized (uroman) -> works for Arabic + English
+  batch_size: 16
+  min_score: -3.0               # mean per-character log-prob; lower = transcript/audio mismatch
+  min_edge_sec: 0.03            # first word must start / last word must end at least this far from the clip edge
+
+# ------------------------------------------------------------- speakers ----
+speakers:
+  embedding_model: nvidia/speakerverification_en_titanet_large
+  merge_similarity: 0.65        # cosine similarity to merge per-video speakers into one global speaker
+  gender_model: alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech
+  gender_samples: 8             # clips classified per global speaker
+
+# ------------------------------------------------------------- balancing ----
+balance:
+  max_hours_per_speaker: 8.0    # cap per global speaker
+  max_speaker_share: 0.03       # ... and at most this share of the whole dataset
+  target_total_hours: null      # stop at this size (null = keep everything that passes)
+  test_speakers: 20             # unseen speakers held out for the test split
+  test_max_minutes_per_speaker: 5
+  validation_fraction: 0.005    # seen-speaker validation clips
+
+# --------------------------------------------------------------- analysis ----
+analysis:
+  topic_clusters: 12
+  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  save_png: true                # also export PNGs (needs Chrome for kaleido; HTML is always saved)
+
+# --------------------------------------------------------------- publish ----
+publish:
+  enabled: false                # set true to push to the Hugging Face Hub
+  repo_id: your-username/egyptian-arabic-speech
+  private: true                 # private until you decide to release
+  max_shard_size: 500MB
