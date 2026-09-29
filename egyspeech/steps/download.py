@@ -29,6 +29,7 @@ def _ydl_opts(cfg: Section, outtmpl: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "noprogress": True,
         "retries": cfg.download.retries,
         "fragment_retries": cfg.download.retries,
         "ffmpeg_location": str(Path(ffmpeg_bin()).parent),

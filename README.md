@@ -51,7 +51,7 @@ flowchart LR
 |---|---|---|---|---|
 | 1 | `collect` | main | expand playlists / channels / videos into **unique** video IDs | `meta/videos.jsonl` |
 | 2 | `download` | main | best audio → mono 24 kHz MP3 + metadata (parallel, retries) | `audio/raw/` |
-| 3 | `separate` | main | vocal stem (audio-separator, Mel-Band RoFormer) | `audio/vocals/` |
+| 3 | `separate` | main | vocal stem (audio-separator, Mel-Band RoFormer) — `auto` mode probes each episode and separates only where music is found | `audio/vocals/` |
 | 4 | `diarize` | nemo | NVIDIA Streaming Sortformer v2.1, frame probabilities | `diar/` |
 | 5 | `segment` | main | Silero VAD + pause-aware planner, single-speaker 5–30 s clips, loudness norm | `chunks/`, `meta/chunks/` |
 | 6 | `quality` | main | DNSMOS P.835/P.808 + UTMOS per clip | `meta/quality/` |
@@ -193,7 +193,8 @@ The model's output is validated: unknown tags are removed, unclosed spans are cl
 
 | setting | default | meaning |
 |---|---|---|
-| `download.format / sample_rate` | `mp3`, `24000` | stored episode format |
+| `download.format / sample_rate / bitrate` | `mp3`, `24000`, `160k` | stored episode format (160 kbps is the MP3 maximum at 24 kHz) |
+| `separation.mode` | `auto` | `auto` = separate only episodes where a probe finds music; `always`; `never` |
 | `separation.use_original_below_music_db` | `-35` | keep the original audio when music is this quiet |
 | `segmentation.min_sec / max_sec / target_sec` | `5 / 30 / 14` | clip lengths |
 | `segmentation.allow_weak_cuts` | `true` | cut long pause-less turns at the deepest dip between words |
@@ -216,7 +217,7 @@ Rough figures **per 1,000 h of downloaded episodes** on one H100 / RTX PRO 6000 
 | step | resource | time |
 |---|---|---|
 | download | network | 5–15 h (YouTube throttling; can run on a cheap CPU pod on the same volume) |
-| separate | GPU | 8–15 h |
+| separate | GPU | ~25–55 h if **every** episode needs it; `separation.mode: auto` skips episodes without music (most talk podcasts), usually a large saving |
 | diarize | GPU | 1–2 h |
 | segment | CPU (8 workers) | 2–4 h |
 | quality + speaker_check | CPU + GPU | 2–4 h |
@@ -224,7 +225,7 @@ Rough figures **per 1,000 h of downloaded episodes** on one H100 / RTX PRO 6000 
 | transcribe — `llm` with tags | GPU (vLLM) | 5–12 h |
 | align, cluster, balance, analysis | GPU / CPU | 1–2 h |
 
-**Plan:** ~2,000 h of episodes → ~1,000 h of final clips takes about **2–4 days on one GPU** (≈ $150–400 on RunPod depending on GPU and backend). Downloading first on a CPU pod saves GPU hours.
+**Plan:** ~2,000 h of episodes → ~1,000 h of final clips takes about **2–5 days on one GPU** (≈ $150–500 on RunPod depending on GPU, how much music your sources contain, and the ASR backend). Separation dominates when many episodes have a music bed. Downloading first on a CPU pod saves GPU hours.
 
 **Disk** for ~2,000 h of episodes: raw MP3 ≈ 170 GB, vocal stems ≈ 190 GB, clips ≈ 140 GB. Enable `storage.delete_vocals_after_segment` / `storage.delete_rejected_clips` to reclaim space once you are happy with the settings.
 

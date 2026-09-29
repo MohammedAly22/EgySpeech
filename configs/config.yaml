@@ -20,7 +20,7 @@ envs:
 download:
   format: mp3                   # stored audio format of full episodes
   sample_rate: 24000
-  bitrate: 192k
+  bitrate: 160k                 # 160 kbps is the MP3 maximum at 24 kHz (MPEG-2 Layer III)
   workers: 4                    # parallel yt-dlp downloads
   min_video_sec: 60             # skip very short videos
   max_video_sec: 14400          # skip > 4 h (livestream dumps)
@@ -34,10 +34,12 @@ download:
 # Removes music and sound effects (vocal stem). Chunks with (almost) no music keep
 # the original audio: separation is only used where it is needed.
 separation:
-  enabled: true
+  mode: auto                    # auto | always | never — auto separates only episodes where a probe finds music
   model: mel_band_roformer_kim_ft_unwa.ckpt   # any audio-separator vocal model filename
-  use_original_below_music_db: -35.0          # music level (dB rel. to speech) under which the raw audio is kept
-  batch_size: 1
+  use_autocast: true            # half-precision separation on GPU (much faster)
+  probe_windows: 6              # auto mode: windows checked per episode (intro / outro skipped)
+  probe_window_sec: 10
+  use_original_below_music_db: -35.0          # music below this level (dB rel. to speech) = no music: keep the original audio
 
 # ---------------------------------------------------------- diarization ----
 diarization:

@@ -14,6 +14,7 @@ from egyspeech.config import Section
 from egyspeech.io import decode_audio, read_audio, read_json, resample, write_audio, write_jsonl
 from egyspeech.segmenter import HOP, SegParams, plan_clips, to_grid
 from egyspeech.steps import layout, step_main, video_ids
+from egyspeech.steps.separate import music_db
 
 logger = logging.getLogger("segment")
 
@@ -33,11 +34,10 @@ def vad_probs(wav16: np.ndarray) -> tuple[np.ndarray, float]:
     win = 512
     n = len(wav16) // win
     x = torch.from_numpy(wav16[: n * win].copy())
-    probs = np.empty(n, dtype=np.float32)
     with torch.inference_mode():
-        for i in range(n):
-            probs[i] = float(model(x[i * win : (i + 1) * win], 16000))
-    return probs, win / 16000
+        # stateful, batched over the whole recording (one call instead of one per 32 ms window)
+        probs = model.audio_forward(x, 16000).squeeze(0).float().numpy()
+    return probs[:n].astype(np.float32), win / 16000
 
 
 def energy_db(wav: np.ndarray, sr: int) -> np.ndarray:
@@ -104,9 +104,8 @@ def process_video(vid: str, cfg: Section) -> list[dict]:
     for clip in clips:
         a, b = int(clip.start * sr), int(clip.end * sr)
         v, r = vocals[a:b], raw[a:b]
-        music = r - v
-        music_db = 10 * np.log10((np.mean(music * music) + 1e-10) / (np.mean(v * v) + 1e-10))
-        use_raw = (not cfg.separation.enabled) or music_db <= cfg.separation.use_original_below_music_db
+        mdb = music_db(r, v)  # gain-invariant level of what separation removed
+        use_raw = cfg.separation.mode == "never" or mdb <= cfg.separation.use_original_below_music_db
         x = r if use_raw else v
         clip_ratio = float(np.mean(np.abs(x) >= 0.999))
         x, loud = loudness_normalize(x, sr, seg.loudness_lufs, seg.peak_dbfs)
@@ -118,7 +117,7 @@ def process_video(vid: str, cfg: Section) -> list[dict]:
         rows.append({
             "id": cid, "video_id": vid, "local_speaker": clip.speaker, "path": str(path),
             "start": clip.start, "end": clip.end, "duration": round(clip.duration, 3),
-            "source": "original" if use_raw else "vocals", "music_db": round(float(music_db), 2),
+            "source": "original" if use_raw else "vocals", "music_db": round(float(mdb), 2),
             "input_lufs": round(loud, 2) if np.isfinite(loud) else None, "clip_ratio": clip_ratio,
             "start_cut": clip.start_cut, "end_cut": clip.end_cut,
             "start_pause": clip.start_pause, "end_pause": clip.end_pause,

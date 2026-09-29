@@ -7,6 +7,7 @@ silero-vad>=6.2
 onnxruntime-gpu>=1.20
 torchmetrics[audio]>=1.9
 librosa>=0.11
+audioread>=3.0            # audio-separator imports it (librosa 1.0 no longer depends on it)
 soundfile>=0.12
 pyloudnorm>=0.2
 numpy>=2

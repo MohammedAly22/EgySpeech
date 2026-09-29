@@ -42,6 +42,7 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$(dirname "$CONDA_DIR")/.pip_cache}"
 # Blackwell GPUs (compute capability >= 10: RTX 50xx, RTX PRO 4500/6000, B200 ...)
 # need CUDA >= 12.8 builds, which need a recent driver.
 TORCH_VERSION=2.11.0
+TORCHVISION_VERSION=0.26.0   # the torchvision release built for torch 2.11
 CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || true)"
 DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || true)"
 CC="${CC:-0}"; DRIVER="${DRIVER:-0}"
@@ -65,7 +66,8 @@ make_env() {  # name python [extra conda-forge packages...]
 
 install_torch() {  # env
   conda run -n "$1" --no-capture-output pip install -q \
-    "torch==${TORCH_VERSION}+${CU}" "torchaudio==${TORCH_VERSION}+${CU}" --index-url "$TORCH_INDEX"
+    "torch==${TORCH_VERSION}+${CU}" "torchaudio==${TORCH_VERSION}+${CU}" \
+    "torchvision==${TORCHVISION_VERSION}+${CU}" --index-url "$TORCH_INDEX"
 }
 
 gpu_check() {  # env
@@ -84,7 +86,7 @@ EOF
 make_env egyspeech 3.12 ffmpeg
 install_torch egyspeech
 conda run -n egyspeech --no-capture-output pip install -q -r "$REPO_DIR/envs/main.txt"
-# audio-separator[gpu] may pull a torch from PyPI: put the matching CUDA build back.
+# Dependencies may pull torch / torchvision from PyPI: put the matching CUDA builds back.
 install_torch egyspeech
 conda run -n egyspeech --no-capture-output pip install -q -e "$REPO_DIR" --no-deps
 conda run -n egyspeech --no-capture-output python -m ipykernel install --user --name egyspeech --display-name "Python (egyspeech)"

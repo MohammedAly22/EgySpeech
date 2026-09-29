@@ -39,9 +39,7 @@ def env_for(step: str, cfg: Section) -> str:
     key = STEP_ENV[step]
     if key is None:
         backend = cfg.transcription.backend if step == "transcribe" else cfg.transcription.verify.backend
-        if backend is None:
-            return "main"
-        key = BACKEND_ENV[backend]
+        key = BACKEND_ENV[backend] if backend else "main"  # verify disabled: no-op in the main env
     return cfg.envs[key]
 
 
