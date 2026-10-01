@@ -93,10 +93,10 @@ quality:
 # ---------------------------------------------------------------- filter ----
 # Scores are cached: change thresholds and re-run `filter` (seconds).
 filter:
-  # Reject only background noise / music / effects and second speakers. Tune interactively:
-  # `python -m egyspeech.cli tune` -> review/tuner.html, then paste its block here. null = metric off.
-  min_dnsmos_bak: 3.0               # Background (DNSMOS BAK): noise, music, sound effects
-  min_window_similarity: null       # Single speaker (voice consistency)
+  # Chosen with the tuner on the 5-video pilot (`python -m egyspeech.cli tune` -> review/tuner.html).
+  # Rejects background noise / music / effects and second speakers; null = metric off.
+  min_dnsmos_bak: 3.60              # Background (DNSMOS BAK): noise, music, sound effects
+  min_window_similarity: 0.780      # Single speaker (voice consistency)
   min_dnsmos_sig: null              # Speech signal (DNSMOS SIG)
   min_dnsmos_ovrl: null             # Overall (DNSMOS OVRL)
   min_dnsmos_p808: null             # Overall (DNSMOS P.808)
