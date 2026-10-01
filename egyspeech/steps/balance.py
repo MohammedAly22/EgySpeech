@@ -15,6 +15,7 @@ from collections import defaultdict
 
 from egyspeech.config import Section
 from egyspeech.io import read_json, read_jsonl, write_json, write_jsonl
+from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main
 from egyspeech.text import cer, is_code_switched, latin_words, normalize_for_compare
 
@@ -34,7 +35,9 @@ def candidates(cfg: Section) -> tuple[list[dict], dict]:
     by_video: dict[str, list[dict]] = defaultdict(list)
     for c in clips.values():
         by_video[c["video_id"]].append(c)
+    bar = StepBar("balance (collect)", len(by_video)).start()
     for vid in sorted(by_video):
+        bar.advance()
         trans = {t["id"]: t for t in read_jsonl(lay.transcripts(backend, vid))}
         aligned = {a["id"]: a for a in read_jsonl(lay.aligned(vid))}
         ver = {t["id"]: t for t in read_jsonl(lay.transcripts(verify, vid))} if verify else {}
@@ -74,6 +77,7 @@ def candidates(cfg: Section) -> tuple[list[dict], dict]:
                 "channel": vm.get("channel"), "video_title": vm.get("title"), "video_url": vm.get("url"),
                 "code_switched": is_code_switched(t["text"]), "latin_words": len(latin_words(t["text"])),
             })
+    bar.close()
     return rows, dict(stats)
 
 

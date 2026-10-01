@@ -15,6 +15,7 @@ import numpy as np
 
 from egyspeech.config import Section
 from egyspeech.io import read_audio, read_json, read_jsonl, resample, write_json
+from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main
 
 logger = logging.getLogger("cluster")
@@ -57,12 +58,15 @@ def main(cfg: Section, args):
         raise SystemExit("no filtered clips: run the filter step first")
     groups: dict[tuple[str, int], list[np.ndarray]] = defaultdict(list)
     group_clips: dict[tuple[str, int], list[str]] = defaultdict(list)
-    for vid in sorted({r["video_id"] for r in clips.values()}):
-        z = np.load(lay.speaker_emb(vid))
-        for cid, emb, spk in zip(z["ids"].tolist(), z["embeddings"], z["local_speaker"].tolist(), strict=True):
-            if cid in clips:
-                groups[(vid, int(spk))].append(emb.astype(np.float32))
-                group_clips[(vid, int(spk))].append(cid)
+    vids = sorted({r["video_id"] for r in clips.values()})
+    with StepBar("cluster (embeddings)", len(vids)) as bar:
+        for vid in vids:
+            z = np.load(lay.speaker_emb(vid))
+            for cid, emb, spk in zip(z["ids"].tolist(), z["embeddings"], z["local_speaker"].tolist(), strict=True):
+                if cid in clips:
+                    groups[(vid, int(spk))].append(emb.astype(np.float32))
+                    group_clips[(vid, int(spk))].append(cid)
+            bar.advance()
     keys = list(groups)
     means = np.stack([np.mean(groups[k], axis=0) for k in keys])
     means /= np.linalg.norm(means, axis=1, keepdims=True) + 1e-9
@@ -91,7 +95,9 @@ def main(cfg: Section, args):
 
     classifier = GenderClassifier(cfg.speakers.gender_model)
     rng = random.Random(0)
-    for g, sp in speakers.items():
+    bar = StepBar("cluster (gender)", len(speakers), unit="speakers").start()
+    for sp in speakers.values():
+        bar.advance()
         sample = rng.sample(sp["clips"], min(cfg.speakers.gender_samples, len(sp["clips"])))
         probs = []
         for cid in sample:
@@ -105,6 +111,7 @@ def main(cfg: Section, args):
         sp["videos"] = sorted(sp["videos"])
         sp["channels"] = sorted(sp["channels"])
         del sp["clips"]
+    bar.close()
     write_json(lay.speakers, {"speakers": sorted(speakers.values(), key=lambda s: -s["hours"]),
                               "assignment": assignment})
     n_f = sum(s["gender"] == "female" for s in speakers.values())

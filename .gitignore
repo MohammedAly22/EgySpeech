@@ -17,3 +17,6 @@ egyspeech_data/
 .install_local.sh
 .wait*.sh
 .rate.sh
+
+# local working data (configs/local.yaml)
+work/

@@ -1,14 +1,18 @@
 """On-disk layout under work_dir.
 
-    meta/videos.jsonl                    collected unique videos
-    audio/raw/<vid>.mp3 (+ .info.json)   downloaded episodes (24 kHz mono)
-    audio/vocals/<vid>.flac              vocal stem (music / effects removed)
+    raw_download/<playlist>/<title> [<vid>].flac   downloaded episodes (download.dir; any folder works)
+    meta/videos.jsonl                    index of the episodes on disk (path, duration, title, ...)
+    meta/video_info/<vid>.json           YouTube metadata (title, channel, ...) when known
+    meta/failures/<step>.jsonl           videos a step could not process (retried on the next run)
+    audio/vocals/<vid>.flac              vocal stem (only when separation is enabled)
     diar/<vid>.json, diar/<vid>.npy      Sortformer segments + frame probabilities
     chunks/<vid>/<chunk_id>.flac         single-speaker clips (5-30 s, loudness normalized)
     meta/chunks/<vid>.jsonl              clip boundaries and segmentation info
-    meta/quality/<vid>.jsonl             DNSMOS / UTMOS / clipping
+    meta/quality/<vid>.jsonl             DNSMOS / UTMOS
     meta/speakers/<vid>.npz              TitaNet embeddings + single-speaker consistency
     meta/filtered.jsonl                  clips passing the quality filter
+    review/index.html                    listening page for checking clips by ear
+    hub/                                 push / pull bookkeeping for the chunk dataset on the Hub
     meta/transcripts/<backend>/<vid>.jsonl
     meta/aligned/<vid>.jsonl             word timestamps + alignment score
     meta/speakers.json                   global speakers (clusters), gender
@@ -37,15 +41,11 @@ class Layout:
     def videos(self) -> Path:
         return self.meta / "videos.jsonl"
 
-    @property
-    def download_failures(self) -> Path:
-        return self.meta / "download_failures.jsonl"
+    def video_info(self, vid: str) -> Path:
+        return self.meta / "video_info" / f"{vid}.json"
 
-    def raw_audio(self, vid: str, fmt: str = "mp3") -> Path:
-        return self.root / "audio" / "raw" / f"{vid}.{fmt}"
-
-    def info_json(self, vid: str) -> Path:
-        return self.root / "audio" / "raw" / f"{vid}.info.json"
+    def failures(self, step: str) -> Path:
+        return self.meta / "failures" / f"{step}.jsonl"
 
     def vocals(self, vid: str) -> Path:
         return self.root / "audio" / "vocals" / f"{vid}.flac"
@@ -104,3 +104,11 @@ class Layout:
     @property
     def hf(self) -> Path:
         return self.root / "hf"
+
+    @property
+    def review(self) -> Path:
+        return self.root / "review"
+
+    @property
+    def hub(self) -> Path:
+        return self.root / "hub"

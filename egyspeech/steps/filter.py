@@ -11,6 +11,7 @@ import numpy as np
 
 from egyspeech.config import Section
 from egyspeech.io import read_jsonl, write_json, write_jsonl
+from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main, video_ids
 
 logger = logging.getLogger("filter")
@@ -19,16 +20,18 @@ logger = logging.getLogger("filter")
 def load_joined(cfg: Section) -> list[dict]:
     """chunks + quality + speaker consistency for every processed video."""
     lay = layout(cfg)
+    vids = [v for v in video_ids(cfg)
+            if lay.chunks_meta(v).exists() and lay.quality(v).exists() and lay.speaker_emb(v).exists()]
     rows = []
-    for vid in video_ids(cfg):
-        if not (lay.chunks_meta(vid).exists() and lay.quality(vid).exists() and lay.speaker_emb(vid).exists()):
-            continue
-        q = {r["id"]: r for r in read_jsonl(lay.quality(vid))}
-        z = np.load(lay.speaker_emb(vid))
-        sim = dict(zip(z["ids"].tolist(), z["window_similarity"].tolist(), strict=True))
-        for c in read_jsonl(lay.chunks_meta(vid)):
-            if c["id"] in q and c["id"] in sim:
-                rows.append({**c, **q[c["id"]], "window_similarity": round(float(sim[c["id"]]), 4)})
+    with StepBar("filter (load)", len(vids)) as bar:
+        for vid in vids:
+            q = {r["id"]: r for r in read_jsonl(lay.quality(vid))}
+            z = np.load(lay.speaker_emb(vid))
+            sim = dict(zip(z["ids"].tolist(), z["window_similarity"].tolist(), strict=True))
+            for c in read_jsonl(lay.chunks_meta(vid)):
+                if c["id"] in q and c["id"] in sim:
+                    rows.append({**c, **q[c["id"]], "window_similarity": round(float(sim[c["id"]]), 4)})
+            bar.advance()
     return rows
 
 
@@ -52,6 +55,9 @@ def reasons(r: dict, f: Section, s: Section) -> list[str]:
         out.append("low_speech")
     if f.drop_weak_cuts and r["weak_cut"]:
         out.append("weak_cut")
+    edges = [r.get("edge_start_db"), r.get("edge_end_db")]
+    if any(e is not None and e > f.max_edge_db for e in edges):
+        out.append("edge_not_silent")  # starts or ends inside speech
     return out
 
 

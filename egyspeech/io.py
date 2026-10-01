@@ -67,12 +67,75 @@ def ffmpeg_bin() -> str:
     raise RuntimeError("ffmpeg not found: run scripts/install.sh (installs ffmpeg into the env)")
 
 
-def decode_audio(path: str | Path, sample_rate: int) -> np.ndarray:
-    """Any audio file -> mono float32 at sample_rate (ffmpeg)."""
+def decode_audio(path: str | Path, sample_rate: int, expected_sec: float | None = None) -> np.ndarray:
+    """Any audio file -> mono float32 at sample_rate (ffmpeg).
+
+    Decoded straight into one preallocated array (sized from expected_sec), so a 4 h
+    episode needs its own size in RAM, not twice that.
+    """
     cmd = [ffmpeg_bin(), "-v", "error", "-nostdin", "-i", str(path), "-ac", "1", "-ar", str(sample_rate),
            "-f", "f32le", "-"]
-    out = subprocess.run(cmd, capture_output=True, check=True).stdout
-    return np.frombuffer(out, dtype=np.float32).copy()
+    buf = np.empty(int((expected_sec or 600) * sample_rate) + sample_rate, dtype=np.float32)
+    filled = 0  # bytes
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+        assert proc.stdout is not None and proc.stderr is not None
+        while True:
+            view = memoryview(buf).cast("B")
+            if filled == view.nbytes:  # longer than expected: grow
+                view.release()
+                grown = np.empty(len(buf) * 3 // 2, dtype=np.float32)
+                grown[: len(buf)] = buf
+                buf = grown
+                continue
+            k = proc.stdout.readinto(view[filled:])
+            view.release()
+            if not k:
+                break
+            filled += k
+        err = proc.stderr.read().decode(errors="replace")
+        proc.wait()
+    if proc.returncode:
+        raise RuntimeError(f"ffmpeg could not decode {path}: {err.strip()[-300:]}")
+    n = filled // 4
+    return buf[:n] if n > 0.9 * len(buf) else buf[:n].copy()
+
+
+class ClipReader:
+    """Time ranges of one audio file, resampled to sample_rate.
+
+    Seeks with soundfile (FLAC / WAV / MP3 / OGG) so clips are read without decoding
+    the whole episode; other formats are decoded once with ffmpeg.
+    """
+
+    def __init__(self, path: str | Path, sample_rate: int):
+        self.sr = sample_rate
+        self.full: np.ndarray | None = None
+        try:
+            self.f: sf.SoundFile | None = sf.SoundFile(str(path))
+            self.sr_in = self.f.samplerate
+        except (RuntimeError, OSError):  # format libsndfile cannot read
+            self.f = None
+            self.sr_in = sample_rate
+            self.full = decode_audio(path, sample_rate)
+
+    def read(self, start: float, end: float) -> np.ndarray:
+        a, b = max(0, int(round(start * self.sr_in))), int(round(end * self.sr_in))
+        if self.f is None:
+            assert self.full is not None
+            return self.full[a:b]
+        self.f.seek(min(a, self.f.frames))
+        x = self.f.read(max(0, b - a), dtype="float32", always_2d=True).mean(axis=1)
+        return resample(x, self.sr_in, self.sr)
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+
+    def __enter__(self) -> "ClipReader":
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def read_audio(path: str | Path) -> tuple[np.ndarray, int]:

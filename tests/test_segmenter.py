@@ -69,7 +69,8 @@ def test_long_monologue_cut_at_pauses_only():
 
 
 def test_no_clip_crosses_speakers_or_overlap():
-    timeline = [(0.5, "pause"), (10, "s0"), (0.4, "pause"), (8, "s1"), (2, "overlap"), (9, "s0"), (0.5, "pause")]
+    timeline = [(0.5, "pause"), (10, "s0"), (0.4, "pause"), (8, "s1"), (0.5, "pause"), (2, "overlap"), (9, "s0"),
+                (0.5, "pause")]
     diar, vad, db = build(timeline)
     p = SegParams()
     clips = plan_clips(diar, vad, db, p)
@@ -123,3 +124,19 @@ def test_activity_dips_between_words_do_not_fragment_turns():
 def test_too_short_turns_dropped():
     diar, vad, db = build([(0.5, "pause"), (3.0, "s0"), (0.5, "pause")])
     assert plan_clips(diar, vad, db, SegParams()) == []
+
+
+def test_interrupted_turn_never_ends_inside_speech():
+    # s0 speaks with pauses, then s1 cuts in with no pause: the tail of s0's turn is cut by
+    # s1's guard zone while s0 is still talking -> s0's clips must end at an earlier pause
+    timeline = [(0.5, "pause")] + speech_with_pauses(20, every=3.0, pause=0.4) + [(6, "s1"), (0.5, "pause")]
+    diar, vad, db = build(timeline)
+    p = SegParams()
+    clips = plan_clips(diar, vad, db, p)
+    speech = vad > p.vad_threshold
+    s0 = [c for c in clips if c.speaker == 0]
+    assert s0, "the clean part of the turn is kept"
+    for c in clips:
+        assert not speech[frames(c.start)], "starts inside speech"
+        assert not speech[min(frames(c.end), len(speech) - 1)], "ends inside speech"
+    assert max(c.end for c in s0) <= 20.5 - 0.3, "s0 clip reaches into the interruption"

@@ -18,23 +18,26 @@ envs:
 
 # ------------------------------------------------------------- download ----
 download:
-  format: mp3                   # stored audio format of full episodes
-  sample_rate: 24000
-  bitrate: 160k                 # 160 kbps is the MP3 maximum at 24 kHz (MPEG-2 Layer III)
-  workers: 4                    # parallel yt-dlp downloads
+  dir: null                     # episodes folder; null = <work_dir>/raw_download. Any folder of
+                                # "<title> [<video id>].flac" files works (subfolders = playlists)
+  audio_format: flac            # yt-dlp converts the best audio stream to this...
+  sample_rate: 24000            # ...at this rate...
+  channels: 1                   # ...mono
   min_video_sec: 60             # skip very short videos
-  max_video_sec: 14400          # skip > 4 h (livestream dumps)
+  max_video_sec: 21600          # skip > 6 h (livestream dumps)
   skip_live: true
-  cookies_file: null            # Netscape cookies.txt if YouTube asks to "confirm you're not a bot"
-  proxy: null
-  sleep_between_sec: 1.0        # politeness delay per worker
-  retries: 5
+  retries: 10
+
+# ---------------------------------------------------------------- index ----
+index:
+  extensions: [flac, wav, mp3, m4a, opus, ogg, webm]
+  min_age_sec: 120              # skip files modified in the last 2 min (still being downloaded)
 
 # ----------------------------------------------------------- separation ----
-# Removes music and sound effects (vocal stem). Chunks with (almost) no music keep
-# the original audio: separation is only used where it is needed.
+# Removes music and sound effects (vocal stem). Clean talk podcasts do not need it:
+# music intros are rejected by the quality filter (DNSMOS BAK) anyway.
 separation:
-  mode: auto                    # auto | always | never — auto separates only episodes where a probe finds music
+  mode: never                   # never | auto (separate only episodes where a probe finds music) | always
   model: mel_band_roformer_kim_ft_unwa.ckpt   # any audio-separator vocal model filename
   use_autocast: true            # half-precision separation on GPU (much faster)
   probe_windows: 6              # auto mode: windows checked per episode (intro / outro skipped)
@@ -60,27 +63,30 @@ segmentation:
   target_sec: 14.0              # preferred length when several cut plans are possible
   vad_threshold: 0.5            # Silero VAD speech probability
   vad_off_threshold: 0.35       # below this = pause
-  min_pause_sec: 0.12           # shortest pause usable as a cut point
-  strong_pause_sec: 0.35        # pauses this long are preferred cut points
-  allow_weak_cuts: true         # if a long turn has no pause, cut at the deepest energy dip between words
+  min_pause_sec: 0.2            # shortest pause usable as a cut point (>= 0.1 s of silence on each side)
+  strong_pause_sec: 0.4         # pauses this long are preferred cut points
+  allow_weak_cuts: false        # true = long turns without pauses may be cut at energy dips (not silence)
   max_internal_silence_sec: 1.5 # a longer pause splits the turn (no long silences inside a clip)
-  guard_sec: 0.3                # distance kept from any other speaker's speech
+  guard_sec: 0.15               # distance kept from any other speaker's speech (diarization timing slack)
   edge_pad_sec: 0.15            # silence kept before the first / after the last word
-  loudness_lufs: -20.0          # loudness normalization target (ITU-R BS.1770)
+  loudness_lufs: -20.0          # loudness normalization target (ITU-R BS.1770), per clip
   peak_dbfs: -1.0               # peak ceiling after normalization
+  fade_ms: 5                    # short fade in / out (no clicks at the clip edges)
   audio_format: flac            # clip format (lossless)
-  workers: 8                    # parallel videos (CPU: VAD + planning + export)
+  vad_streams: 16               # Silero VAD runs each episode as this many parallel streams (~3x faster)
+  workers: 8                    # parallel videos (CPU)
+  memory_gb: 24                 # RAM shared by the workers (a 4 h episode needs ~2.5 GB)
 
 # ------------------------------------------------------------- storage ----
-# ~2000 h of episodes need roughly: raw MP3 170 GB, vocal stems 190 GB, clips 140 GB.
+# ~1,800 h of episodes as FLAC: ~300 GB; clips before filtering: ~60-70% of that.
 storage:
   delete_vocals_after_segment: false   # frees the vocal stems (re-segmenting then needs `separate` again)
   delete_rejected_clips: false         # remove audio of clips that fail the quality filter
 
 # -------------------------------------------------------------- quality ----
 quality:
-  workers: 8                    # CPU workers for DNSMOS
-  batch_size: 32                # UTMOS batch
+  workers: 8                    # DNSMOS CPU processes (one thread each)
+  batch_size: 32                # UTMOS batch (GPU)
   speaker_window_sec: 3.0       # TitaNet windows for the single-speaker check
   speaker_hop_sec: 1.5
 
@@ -95,6 +101,8 @@ filter:
   max_clip_ratio: 0.001         # fraction of clipped samples
   min_speech_ratio: 0.55        # speech / clip duration
   drop_weak_cuts: false         # true = keep only clips cut at real pauses
+  max_edge_db: -25.0            # loudest 10 ms in the first / last 40 ms must be this far below the speech
+                                # level: every clip starts and ends in silence, never inside a word
 
 # --------------------------------------------------------- transcription ----
 transcription:
@@ -172,6 +180,14 @@ analysis:
   topic_clusters: 12
   embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
   save_png: true                # also export PNGs (needs Chrome for kaleido; HTML is always saved)
+
+# ------------------------------------------------------------------ hub ----
+# push_chunks / pull_chunks: the filtered clips (before transcription) as a Hugging Face dataset
+hub:
+  chunks_repo_id: your-username/egyspeech-chunks
+  private: true
+  shard_mb: 500                 # audio per Parquet shard (whole videos per shard)
+  shards_per_commit: 4          # shards uploaded per commit (also the local disk needed: ~2 GB)
 
 # --------------------------------------------------------------- publish ----
 publish:

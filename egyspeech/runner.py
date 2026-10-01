@@ -15,14 +15,17 @@ from egyspeech.config import REPO_ROOT, Section
 
 # step -> env key in cfg.envs ("transcribe"/"verify" depend on the ASR backend)
 STEP_ENV = {
-    "collect": "main",
     "download": "main",
+    "index": "main",
     "separate": "main",
     "diarize": "nemo",
     "segment": "main",
     "quality": "main",
     "speaker_check": "nemo",
     "filter": "main",
+    "review": "main",
+    "push_chunks": "main",
+    "pull_chunks": "main",
     "transcribe": None,
     "verify": None,
     "align": "main",
@@ -32,6 +35,13 @@ STEP_ENV = {
     "publish": "main",
 }
 STEPS = list(STEP_ENV)
+# `run --stage local`: episodes on disk -> clean single-speaker clips (a small GPU is enough);
+# `run --stage gpu`: transcription and everything after it (after pull_chunks on a GPU machine).
+STAGES = {
+    "local": ["index", "separate", "diarize", "segment", "quality", "speaker_check", "filter", "review"],
+    "gpu": ["transcribe", "verify", "align", "cluster", "balance", "analysis", "publish"],
+}
+STAGES["all"] = STAGES["local"] + STAGES["gpu"]
 BACKEND_ENV = {"qwencleo": "qwen", "cohere": "main", "parakeet": "nemo", "llm": "main"}
 
 

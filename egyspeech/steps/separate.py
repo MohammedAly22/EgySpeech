@@ -3,11 +3,11 @@
 Writes audio/vocals/<vid>.flac (mono, 24 kHz) and meta/separation/<vid>.json.
 
 separation.mode
-  auto    (default) probe a few short windows spread over the episode; separate the
+  never   (default) no separation: clean podcasts are used as they are (this step does nothing)
+  auto    probe a few short windows spread over the episode; separate the
           whole episode only if one of them contains music / effects. Talk podcasts
           without a music bed skip the (expensive) separation entirely.
   always  separate every episode
-  never   no separation (the "vocal stem" is the original audio)
 
 The segmenter later measures the music level per clip and keeps the original audio
 wherever there is (almost) no music, so separation artifacts only appear where
@@ -23,7 +23,8 @@ import numpy as np
 
 from egyspeech.config import Section
 from egyspeech.io import atomic_path, decode_audio, read_audio, resample, write_audio
-from egyspeech.steps import layout, step_main, video_ids
+from egyspeech.progress import StepBar
+from egyspeech.steps import layout, select, step_main, total_sec, write_failures
 
 logger = logging.getLogger("separate")
 
@@ -96,49 +97,58 @@ def probe(raw: np.ndarray, sr: int, stemmer: Stemmer, cfg: Section) -> list[floa
 
 def main(cfg: Section, args):
     lay = layout(cfg)
-    fmt, sr = cfg.download.format, cfg.download.sample_rate
+    sr = cfg.download.sample_rate
     mode = cfg.separation.mode
     if mode not in ("auto", "always", "never"):
         raise SystemExit(f"separation.mode must be auto | always | never, got {mode!r}")
-    vids = [v for v in video_ids(cfg) if lay.raw_audio(v, fmt).exists()]
-    pending = [v for v in vids if args.force or not lay.vocals(v).exists()]
-    if args.limit:
-        pending = pending[: args.limit]
-    logger.info(f"{len(vids) - len(pending)} done, {len(pending)} to process (mode={mode})")
+    if mode == "never":
+        logger.info("separation.mode is never: the speech steps read the episodes as they are")
+        return
+    pending, n_done = select(cfg, args, ready=lambda v: True, done=lambda v: lay.vocals(v["id"]).exists())
+    logger.info(f"{n_done} done, {len(pending)} to process (mode={mode})")
     if not pending:
         return
     lay.vocals("x").parent.mkdir(parents=True, exist_ok=True)
     info_dir = lay.meta / "separation"
     info_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="sep_", dir=str(cfg.work_dir)) as tmp:
-        stemmer = Stemmer(cfg, tmp) if mode != "never" else None
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="sep_", dir=str(cfg.work_dir)) as tmp,             StepBar("separate", len(pending), audio_sec=total_sec(pending)) as bar:
+        stemmer = Stemmer(cfg, tmp)
         n_sep = 0
-        for i, vid in enumerate(pending, 1):
-            raw = decode_audio(lay.raw_audio(vid, fmt), sr)
-            info: dict = {"mode": mode}
-            separate = mode == "always"
-            if mode == "auto":
-                levels = probe(raw, sr, stemmer, cfg)
-                info["probe_music_db"] = levels
-                separate = max(levels) > cfg.separation.use_original_below_music_db
-            if separate:
-                src = Path(tmp) / f"{vid}.flac"
-                write_audio(src, raw, sr)
-                vocals = stemmer.vocals(src, sr)
-                src.unlink(missing_ok=True)
-                n_sep += 1
-            else:
-                vocals = raw
-            write_audio(lay.vocals(vid), vocals[: len(raw)], sr)
-            info["separated"] = separate
-            tmp_json = atomic_path(info_dir / f"{vid}.json")
-            tmp_json.write_text(json.dumps(info), encoding="utf-8")
-            tmp_json.replace(info_dir / f"{vid}.json")
-            what = "separated" if separate else "no music found, original kept"
-            extra = f" | probe music dB {info.get('probe_music_db')}" if mode == "auto" else ""
-            logger.info(f"[{i}/{len(pending)}] {vid}: {what}{extra}")
-    logger.info(f"{n_sep}/{len(pending)} episodes needed separation")
+        for v in pending:
+            vid = v["id"]
+            bar.status(vid)
+            try:
+                raw = decode_audio(v["path"], sr, v.get("duration"))
+                info: dict = {"mode": mode}
+                separate = mode == "always"
+                if mode == "auto":
+                    levels = probe(raw, sr, stemmer, cfg)
+                    info["probe_music_db"] = levels
+                    separate = max(levels) > cfg.separation.use_original_below_music_db
+                if separate:
+                    src = Path(tmp) / f"{vid}.flac"
+                    write_audio(src, raw, sr)
+                    vocals = stemmer.vocals(src, sr)
+                    src.unlink(missing_ok=True)
+                    n_sep += 1
+                else:
+                    vocals = raw
+                write_audio(lay.vocals(vid), vocals[: len(raw)], sr)
+                info["separated"] = separate
+                tmp_json = atomic_path(info_dir / f"{vid}.json")
+                tmp_json.write_text(json.dumps(info), encoding="utf-8")
+                tmp_json.replace(info_dir / f"{vid}.json")
+                what = "separated" if separate else "no music found, original kept"
+                extra = f" | probe music dB {info.get('probe_music_db')}" if mode == "auto" else ""
+                logger.info(f"{vid}: {what}{extra}")
+            except Exception as exc:  # noqa: BLE001 - keep going, record the failure
+                failures.append({"id": vid, "path": v["path"], "error": f"{type(exc).__name__}: {exc}"[:500]})
+                logger.warning(f"{vid}: {type(exc).__name__}: {exc}")
+            bar.advance(audio_sec=v["duration"])
+    write_failures(cfg, "separate", failures)
+    logger.info(f"{n_sep}/{len(pending)} episodes needed separation, {len(failures)} failed")
 
 
 if __name__ == "__main__":

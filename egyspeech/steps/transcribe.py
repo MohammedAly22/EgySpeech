@@ -12,6 +12,7 @@ from collections import defaultdict
 from egyspeech.asr import get_backend
 from egyspeech.config import Section
 from egyspeech.io import read_jsonl, write_jsonl
+from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main
 from egyspeech.text import arabic_ratio, has_repetition_loop, letters_count
 
@@ -51,8 +52,11 @@ def run(cfg: Section, args, backend_name: str):
     backend = get_backend(backend_name, cfg)
     s = cfg.transcription.sanity
     n_ok = n_all = 0
-    for i, vid in enumerate(pending, 1):
+    clip_sec = sum(c["duration"] for v in pending for c in by_video[v])
+    bar = StepBar(f"transcribe ({backend_name})", len(pending), audio_sec=clip_sec).start()
+    for vid in pending:
         clips = by_video[vid]
+        bar.status(vid)
         results = backend.transcribe([c["path"] for c in clips], [c["duration"] for c in clips])
         rows = []
         for c, res in zip(clips, results, strict=True):
@@ -67,7 +71,9 @@ def run(cfg: Section, args, backend_name: str):
         ok = sum(r["ok"] for r in rows)
         n_ok += ok
         n_all += len(rows)
-        logger.info(f"[{i}/{len(pending)}] {vid}: {len(rows)} clips, {ok} pass sanity")
+        logger.info(f"{vid}: {len(rows)} clips, {ok} pass sanity")
+        bar.advance(audio_sec=sum(c["duration"] for c in clips))
+    bar.close()
     logger.info(f"this run: {n_ok}/{n_all} transcripts pass the sanity checks")
 
 

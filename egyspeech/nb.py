@@ -47,12 +47,18 @@ def clips_frame(lay: Layout) -> pd.DataFrame:
     return df
 
 
-def play(path: str, label: str = ""):
+def play(path: str, label: str = "", max_sec: float | None = None):
+    """Audio player for a clip (or the first max_sec seconds of an episode)."""
+    import soundfile as sf
     from IPython.display import Audio, Markdown, display
 
     if label:
         display(Markdown(label))
-    wav, sr = read_audio(path)
+    if max_sec:
+        with sf.SoundFile(str(path)) as f:
+            wav, sr = f.read(int(max_sec * f.samplerate), dtype="float32", always_2d=True).mean(axis=1), f.samplerate
+    else:
+        wav, sr = read_audio(path)
     display(Audio(wav, rate=sr))
 
 

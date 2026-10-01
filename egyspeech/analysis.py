@@ -1,7 +1,7 @@
 """Dataset analysis: statistics + Plotly figures (used by the analysis step and notebook)."""
 
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -56,11 +56,7 @@ def _hours(df: pd.DataFrame) -> float:
 
 
 def downloaded_hours(cfg: Section) -> float:
-    lay = Layout(cfg.work_dir)
-    total = 0.0
-    for p in (lay.root / "audio" / "raw").glob("*.info.json"):
-        total += (read_json(p).get("duration") or 0) / 3600
-    return total
+    return sum(v.get("duration") or 0 for v in read_jsonl(Layout(cfg.work_dir).videos)) / 3600
 
 
 def build(cfg: Section) -> tuple[dict, dict]:

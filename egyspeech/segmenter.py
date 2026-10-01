@@ -17,6 +17,10 @@ Inputs are frame-level signals on a common 10 ms grid:
    keeping as much speech as possible; stretches that cannot form a valid clip are
    discarded rather than cut badly.
 4. Trim. Each clip is trimmed to its speech plus `edge_pad_sec` of silence.
+
+A turn edge only counts as a boundary when there is silence at it; if the speaker is
+still talking where another voice's guard zone begins, the clip ends at the last
+pause before that instead, so no clip starts or ends inside a word.
 """
 
 from dataclasses import dataclass, field
@@ -41,6 +45,8 @@ class SegParams:
     max_internal_silence_sec: float = 1.5
     guard_sec: float = 0.3
     edge_pad_sec: float = 0.15
+    edge_silence_sec: float = 0.08  # a turn edge is a valid cut only with this much silence at it
+    silence_db: float = 25.0  # frames this far below the median speech energy are silence, whatever VAD says
     length_weight: float = 2.0
     pause_weight: float = 1.0
     weak_cut_penalty: float = 1.5
@@ -86,10 +92,23 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1), strict=True))
 
 
-def speaker_turns(diar: np.ndarray, vad: np.ndarray, p: SegParams) -> list[tuple[int, int, int]]:
+def silence_masks(vad: np.ndarray, db: np.ndarray, p: SegParams) -> tuple[np.ndarray, np.ndarray]:
+    """(speech, pause) frame masks from VAD and energy.
+
+    Silero VAD smooths over short gaps (its probability stays high for ~0.2 s after a
+    word), so the quick hand-overs of a conversation look like continuous speech. A
+    frame whose energy is `silence_db` below the recording's median speech level is
+    silence whatever VAD says.
+    """
+    voiced = vad > p.vad_threshold
+    level = float(np.median(db[voiced])) if voiced.any() else float(db.max(initial=0.0))
+    quiet = db < level - p.silence_db
+    return voiced & ~quiet, (vad < p.vad_off_threshold) | quiet
+
+
+def speaker_turns(diar: np.ndarray, speech: np.ndarray, p: SegParams) -> list[tuple[int, int, int]]:
     """(speaker, start frame, end frame) turns with only that speaker (or silence)."""
     n, S = diar.shape
-    speech = vad > p.vad_threshold
     active = diar > p.speaker_threshold
     present = diar > p.other_speaker_threshold
     nobody = ~present.any(axis=1)
@@ -123,9 +142,9 @@ def speaker_turns(diar: np.ndarray, vad: np.ndarray, p: SegParams) -> list[tuple
     return turns
 
 
-def _pause_candidates(vad: np.ndarray, db: np.ndarray, a: int, b: int, p: SegParams):
+def _pause_candidates(pause_mask: np.ndarray, db: np.ndarray, a: int, b: int, p: SegParams):
     """(frame, quality, pause_len_sec, kind) cut candidates strictly inside (a, b)."""
-    pause = vad[a:b] < p.vad_off_threshold
+    pause = pause_mask[a:b]
     cands = []
     for s, e in _runs(pause):
         if s == 0 or e == b - a:
@@ -212,22 +231,29 @@ def _plan(nodes: list[tuple[int, float, float, str]], p: SegParams) -> list[tupl
 
 def plan_clips(diar: np.ndarray, vad: np.ndarray, db: np.ndarray, p: SegParams) -> list[Clip]:
     """Clips (in seconds) for one recording; all inputs on the HOP grid, same length."""
-    speech = vad > p.vad_threshold
+    speech, pause_mask = silence_masks(vad, db, p)
     pad = int(round(p.edge_pad_sec / HOP))
+    quiet = max(1, int(round(p.edge_silence_sec / HOP)))
     clips: list[Clip] = []
-    for spk, a, b in speaker_turns(diar, vad, p):
+    for spk, a, b in speaker_turns(diar, speech, p):
         if (b - a) * HOP < p.min_sec:
             continue
-        cands = _pause_candidates(vad, db, a, b, p)
-        nodes = [(a, 1.0, 0.0, "turn")] + cands + [(b, 1.0, 0.0, "turn")]
-        kept = _plan(nodes, p) if (b - a) * HOP > p.max_sec else [(0, len(nodes) - 1)]
-        if p.allow_weak_cuts and (b - a) * HOP > p.max_sec:
+        # A turn edge where the speaker is still talking (cut short by another voice's guard
+        # zone) is not a clean boundary: the clip must then start / end at a pause inside.
+        head = [(a, 1.0, 0.0, "turn")] if pause_mask[a : a + quiet].all() else []
+        tail = [(b, 1.0, 0.0, "turn")] if pause_mask[b - quiet : b].all() else []
+        cands = _pause_candidates(pause_mask, db, a, b, p)
+        nodes = head + cands + tail
+        if len(nodes) < 2:
+            continue
+        whole = head and tail and (b - a) * HOP <= p.max_sec
+        kept = [(0, len(nodes) - 1)] if whole else _plan(nodes, p)
+        if p.allow_weak_cuts and not whole:
             covered = sum(nodes[j][0] - nodes[i][0] for i, j in kept) * HOP
             if covered < 0.8 * (b - a) * HOP:
                 weak = _weak_candidates(vad, db, a, b, [c[0] for c in cands])
                 if weak:
-                    nodes = sorted(nodes[1:-1] + weak, key=lambda x: x[0])
-                    nodes = [(a, 1.0, 0.0, "turn")] + nodes + [(b, 1.0, 0.0, "turn")]
+                    nodes = head + sorted(cands + weak, key=lambda x: x[0]) + tail
                     kept = _plan(nodes, p)
         for i, j in kept:
             s_node, e_node = nodes[i], nodes[j]

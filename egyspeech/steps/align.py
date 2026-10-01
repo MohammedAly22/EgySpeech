@@ -18,6 +18,7 @@ import torch
 
 from egyspeech.config import Section
 from egyspeech.io import read_audio, read_jsonl, resample, write_jsonl
+from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main
 from egyspeech.text import strip_tags
 
@@ -167,7 +168,10 @@ def main(cfg: Section, args):
         return
     aligner = Aligner(cfg)
     a = cfg.alignment
-    for i, vid in enumerate(pending, 1):
+    clip_sec = sum(clips[t["id"]]["duration"] for v in pending for t in by_video[v])
+    bar = StepBar("align", len(pending), audio_sec=clip_sec).start()
+    for vid in pending:
+        bar.status(vid)
         items, ids = [], []
         for t in by_video[vid]:
             wav, sr = read_audio(clips[t["id"]]["path"])
@@ -193,7 +197,9 @@ def main(cfg: Section, args):
                          "align_ok": edge_ok and res["align_score"] >= a.min_score and ratio >= 0.9})
         write_jsonl(lay.aligned(vid), rows)
         ok = sum(r["align_ok"] for r in rows)
-        logger.info(f"[{i}/{len(pending)}] {vid}: {ok}/{len(rows)} aligned OK")
+        logger.info(f"{vid}: {ok}/{len(rows)} aligned OK")
+        bar.advance(audio_sec=sum(clips[c]["duration"] for c in ids))
+    bar.close()
 
 
 if __name__ == "__main__":

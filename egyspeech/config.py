@@ -47,11 +47,27 @@ class Section(dict):
         return Section(value) if isinstance(value, dict) and not isinstance(value, Section) else value
 
 
-def load_config(path: str | Path | None = None) -> Section:
-    path = Path(path) if path else DEFAULT_CONFIG
+def _merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _load_raw(path: Path) -> dict:
+    """YAML file; `extends: other.yaml` (relative to this file) is loaded first and overridden."""
     with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    cfg = Section(_walk(raw))
+        raw = yaml.safe_load(f) or {}
+    parent = raw.pop("extends", None)
+    return _merge(_load_raw((path.parent / parent).resolve()), raw) if parent else raw
+
+
+def load_config(path: str | Path | None = None) -> Section:
+    """--config, else $EGYSPEECH_CONFIG, else configs/config.yaml (relative paths: cwd, then repo root)."""
+    path = Path(path or os.environ.get("EGYSPEECH_CONFIG") or DEFAULT_CONFIG)
+    if not path.is_absolute() and not path.exists():
+        path = REPO_ROOT / path
+    cfg = Section(_walk(_load_raw(Path(path))))
     cfg["_path"] = str(Path(path).resolve())
     return cfg
 
