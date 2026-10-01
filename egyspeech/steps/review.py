@@ -16,7 +16,7 @@ from collections import defaultdict
 
 from egyspeech.config import Section
 from egyspeech.steps import layout, step_main, videos
-from egyspeech.steps.filter import load_joined, reasons
+from egyspeech.steps.filter import load_joined, reasons, risk
 
 logger = logging.getLogger("review")
 
@@ -35,11 +35,11 @@ table { border-collapse:collapse; width:100%; } td, th { border-bottom:1px solid
 audio { height:32px; width:260px; } a { color:inherit; }
 """
 
-COLS = ["clip", "audio", "dur", "spk", "OVRL", "SIG", "BAK", "UTMOS", "voice sim", "edge dB (start / end)",
-        "cuts", "other spk", "video"]
+COLS = ["clip", "audio", "risk", "dur", "spk", "OVRL", "SIG", "BAK", "UTMOS", "voice sim", "edge dB (start / end)",
+        "cuts", "video"]
 
 
-def _row(r: dict, root: str, title: str, why: list[str]) -> str:
+def _row(r: dict, root: str, title: str, why: list[str], f) -> str:
     rel = os.path.relpath(r["path"], root).replace(os.sep, "/")
     t = int(r["start"])
     url = f"https://www.youtube.com/watch?v={r['video_id']}&t={t}s" if len(r["video_id"]) == 11 else None
@@ -47,18 +47,22 @@ def _row(r: dict, root: str, title: str, why: list[str]) -> str:
         html.escape(title[:50])
     edge = f"{r.get('edge_start_db', '–')} / {r.get('edge_end_db', '–')}"
     cls = "bad" if why else "ok"
+    total, contrib = risk(r, f)
+    parts = " + ".join(f"{k.replace('dnsmos_', '').replace('window_similarity', 'voice')} {v:.2f}"
+                       for k, v in sorted(contrib.items(), key=lambda kv: -kv[1]) if v > 0)
+    risk_cell = f"<b>{total:.2f}</b>" + (f'<br><span class="muted">{parts}</span>' if parts else "")
     cells = [f'<span class="{cls}">{html.escape(r["id"])}</span>' + (f'<br><span class="bad">{", ".join(why)}</span>'
              if why else ""),
-             f'<audio controls preload="none" src="{html.escape(rel)}"></audio>',
+             f'<audio controls preload="none" src="{html.escape(rel)}"></audio>', risk_cell,
              f"{r['duration']:.1f}s", str(r["local_speaker"]), f"{r['dnsmos_ovrl']:.2f}", f"{r['dnsmos_sig']:.2f}",
              f"{r['dnsmos_bak']:.2f}", f"{r['utmos']:.2f}", f"{r['window_similarity']:.2f}", edge,
-             f"{r['start_cut']} / {r['end_cut']}", f"{r.get('other_spk_max', 0):.2f}", video]
+             f"{r['start_cut']} / {r['end_cut']}", video]
     return "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
 
 
-def _table(rows: list[tuple[dict, list[str]]], root: str, titles: dict) -> str:
+def _table(rows: list[tuple[dict, list[str]]], root: str, titles: dict, f) -> str:
     head = "".join(f"<th>{c}</th>" for c in COLS)
-    body = "\n".join(_row(r, root, titles.get(r["video_id"], r["video_id"]), why) for r, why in rows)
+    body = "\n".join(_row(r, root, titles.get(r["video_id"], r["video_id"]), why, f) for r, why in rows)
     return f'<div class="wrap"><table><tr>{head}</tr>{body}</table></div>'
 
 
@@ -84,16 +88,26 @@ def main(cfg: Section, args):
              f"<span><b>{kept_h:.2f} h</b> / {total_h:.2f} h kept</span>",
              f"<span>{len({r['video_id'] for r in rows})} videos</span>"]
     chips += [f'<span class="bad">{k}: {len(v):,}</span>' for k, v in sorted(by_reason.items(), key=lambda kv: -len(kv[1]))]
+    f = cfg.filter
+    soft = [x for x in judged if not x[1] or x[1] == ["combined_risk"]]  # decided by the risk score
+    by_risk = sorted(soft, key=lambda x: risk(x[0], f)[0])
+    edge_kept = [x for x in by_risk if not x[1]][-args.per_reason:][::-1]
+    edge_rej = [x for x in by_risk if x[1]][: args.per_reason]
     parts = [f"<h1>EgySpeech · clip review</h1><p class='muted'>Random sample (seed {args.seed}). "
              "Listen for: a second voice, a word cut at the start or end, music, noise. "
-             "Edge dB = loudest 10 ms at the clip edge relative to its speech (silence ≈ -35 dB or lower).</p>",
+             f"Risk = weighted sum of borderline scores (rejected at {f.max_risk}); the parts show what "
+             "contributes. Edge dB = loudest 10 ms at the clip edge relative to its speech.</p>",
              f'<div class="summary">{"".join(chips)}</div>',
-             f"<h2 class='ok'>Kept ({min(args.n, len(kept))} of {len(kept):,})</h2>",
-             _table(rng.sample(kept, min(args.n, len(kept))), root, titles)]
+             "<h2 class='ok'>Kept, closest to the limit (highest risk): check these first</h2>",
+             _table(edge_kept, root, titles, f),
+             "<h2 class='bad'>Rejected by risk, closest to the limit (lowest risk)</h2>",
+             _table(edge_rej, root, titles, f),
+             f"<h2 class='ok'>Kept, random ({min(args.n, len(kept))} of {len(kept):,})</h2>",
+             _table(rng.sample(kept, min(args.n, len(kept))), root, titles, f)]
     for why, items in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
         k = min(args.per_reason, len(items))
         parts += [f"<h2 class='bad'>Rejected: {why} ({k} of {len(items):,})</h2>",
-                  _table(rng.sample(items, k), root, titles)]
+                  _table(rng.sample(items, k), root, titles, f)]
     page = (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' "
             f"content='width=device-width, initial-scale=1'><title>EgySpeech review</title><style>{CSS}</style>"
             f"</head><body>{''.join(parts)}</body></html>")
@@ -105,7 +119,7 @@ def main(cfg: Section, args):
 if __name__ == "__main__":
     def _args(p):
         p.add_argument("--n", type=int, default=60, help="kept clips to show")
-        p.add_argument("--per-reason", type=int, default=8, help="rejected clips to show per reason")
+        p.add_argument("--per-reason", type=int, default=10, help="clips per rejection reason / borderline section")
         p.add_argument("--seed", type=int, default=0)
 
     step_main(main, _args)

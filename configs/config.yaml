@@ -93,16 +93,27 @@ quality:
 # ---------------------------------------------------------------- filter ----
 # Scores are cached: change thresholds and re-run `filter` (seconds).
 filter:
-  min_dnsmos_ovrl: 3.0
-  min_dnsmos_sig: 3.3
-  min_dnsmos_bak: 3.6
-  min_utmos: 2.8
-  min_window_similarity: 0.45   # every 3 s window must match the clip's voice (single speaker)
-  max_clip_ratio: 0.001         # fraction of clipped samples
-  min_speech_ratio: 0.55        # speech / clip duration
-  drop_weak_cuts: false         # true = keep only clips cut at real pauses
-  max_edge_db: -25.0            # loudest 10 ms in the first / last 40 ms must be this far below the speech
-                                # level: every clip starts and ends in silence, never inside a word
+  # Two stages, tuned on the 5-video pilot by listening (483 clips -> 456 kept; every labeled clip right).
+  # Stage 1 - hard limits: unambiguous defects, any one rejects the clip.
+  hard:
+    min_dnsmos_bak: 2.5           # strong background noise / music / effects
+    min_dnsmos_sig: 2.7           # strongly distorted speech
+    min_dnsmos_ovrl: 2.0
+    min_utmos: 1.5                # broken audio (UTMOS is English-trained: Arabic scores low in general)
+    min_window_similarity: 0.65   # a 3 s window with a clearly different voice (second speaker)
+    max_clip_ratio: 0.001         # fraction of clipped samples
+    min_speech_ratio: 0.55        # speech / clip duration
+  # Stage 2 - weighted risk: each metric adds 0 at `good` ... `weight` at `bad` (linear in between);
+  # reject when the sum reaches max_risk. One borderline score passes, several together do not
+  # (e.g. a bit of background + a non-silent edge + low UTMOS = an interruption or sound effect).
+  risk:
+    dnsmos_bak:        {good: 3.5,   bad: 2.75,  weight: 1.0}   # background noise / music / effects (decisive)
+    dnsmos_sig:        {good: 3.2,   bad: 2.8,   weight: 0.5}   # speech distortion
+    utmos:             {good: 2.6,   bad: 1.8,   weight: 0.5}   # naturalness
+    window_similarity: {good: 0.80,  bad: 0.65,  weight: 0.5}   # voice consistency (second speaker)
+    edge_db:           {good: -30.0, bad: -10.0, weight: 0.5}   # louder clip edge vs speech level (speech at the cut)
+  max_risk: 1.0
+  drop_weak_cuts: false           # true = keep only clips cut at real pauses
 
 # --------------------------------------------------------- transcription ----
 transcription:

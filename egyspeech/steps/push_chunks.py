@@ -43,7 +43,7 @@ def chunk_features(sample_rate: int):
         "clip_ratio": f32, "start_cut": s, "end_cut": s, "start_pause": f32, "end_pause": f32,
         "speech_ratio": f32, "max_internal_silence": f32, "weak_cut": b, "edge_start_db": f32,
         "edge_end_db": f32, "other_spk_max": f32, "dnsmos_p808": f32, "dnsmos_sig": f32, "dnsmos_bak": f32,
-        "dnsmos_ovrl": f32, "utmos": f32, "window_similarity": f32, "speaker_embedding": List(Value("float32")),
+        "dnsmos_ovrl": f32, "utmos": f32, "window_similarity": f32, "filter_risk": f32, "speaker_embedding": List(Value("float32")),
     })
 
 
@@ -60,7 +60,6 @@ def write_shard(rows: list[dict], features, path: Path) -> None:
 
 
 def dataset_card(repo_id: str, manifest: dict, cfg: Section) -> str:
-    f = cfg.filter
     return f"""---
 language:
 - ar
@@ -83,9 +82,9 @@ YouTube episodes, prepared by the [EgySpeech pipeline](https://github.com/Mohamm
 Sortformer diarization, clips of {cfg.segmentation.min_sec:g}-{cfg.segmentation.max_sec:g} s cut inside pauses,
 24 kHz mono FLAC loudness-normalized to {cfg.segmentation.loudness_lufs:g} LUFS.
 
-Filter applied: DNSMOS OVRL >= {f.min_dnsmos_ovrl}, SIG >= {f.min_dnsmos_sig}, BAK >= {f.min_dnsmos_bak},
-UTMOS >= {f.min_utmos}, voice consistency (TitaNet, every window) >= {f.min_window_similarity},
-silence at both clip edges (<= {f.max_edge_db} dB relative to the speech).
+Filter applied (filter section of the config): hard limits (DNSMOS BAK / SIG / OVRL, UTMOS, TitaNet voice
+consistency, clipping, speech ratio), then a weighted risk score over background noise, speech quality,
+voice consistency and the silence at the clip edges: several borderline signs together reject a clip.
 
 Transcripts are added in the next stage (`python -m egyspeech.cli pull_chunks` on a GPU machine, then
 `run --stage gpu`). `metadata/videos.jsonl` lists the source episodes.
