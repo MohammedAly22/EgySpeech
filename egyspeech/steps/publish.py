@@ -82,7 +82,7 @@ The `test` split contains only speakers that never appear in `train` / `validati
 1. YouTube episodes -> mono 24 kHz; music and sound effects removed (vocal stem) only where present.
 2. NVIDIA Streaming Sortformer diarization; clips keep a guard distance from every other speaker.
 3. Clips of {cfg.segmentation.min_sec}-{cfg.segmentation.max_sec} s cut at real pauses (never inside a word).
-4. Quality filter: DNSMOS OVRL >= {cfg.filter.min_dnsmos_ovrl}, SIG >= {cfg.filter.min_dnsmos_sig}, BAK >= {cfg.filter.min_dnsmos_bak}, UTMOS >= {cfg.filter.min_utmos}; single-speaker check with TitaNet (every 3 s window must match the clip's voice).
+4. Quality filter: {', '.join(f'{k} = {v}' for k, v in cfg.filter.items() if v is not None and k != 'drop_weak_cuts')} (TitaNet voice consistency = every 3 s window must match the clip's voice).
 5. Transcription with `{cfg.transcription.backend}`; transcripts checked for hallucination / truncation.
 6. MMS forced alignment (Arabic + English words) with word timestamps; clips whose transcript does not match the audio are removed.
 7. Speakers clustered across episodes and capped so no voice dominates.

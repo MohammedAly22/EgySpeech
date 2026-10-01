@@ -83,9 +83,7 @@ YouTube episodes, prepared by the [EgySpeech pipeline](https://github.com/Mohamm
 Sortformer diarization, clips of {cfg.segmentation.min_sec:g}-{cfg.segmentation.max_sec:g} s cut inside pauses,
 24 kHz mono FLAC loudness-normalized to {cfg.segmentation.loudness_lufs:g} LUFS.
 
-Filter applied: DNSMOS OVRL >= {f.min_dnsmos_ovrl}, SIG >= {f.min_dnsmos_sig}, BAK >= {f.min_dnsmos_bak},
-UTMOS >= {f.min_utmos}, voice consistency (TitaNet, every window) >= {f.min_window_similarity},
-silence at both clip edges (<= {f.max_edge_db} dB relative to the speech).
+Filter applied: {', '.join(f'{k} = {v}' for k, v in f.items() if v is not None and k != 'drop_weak_cuts') or 'none'}.
 
 Transcripts are added in the next stage (`python -m egyspeech.cli pull_chunks` on a GPU machine, then
 `run --stage gpu`). `metadata/videos.jsonl` lists the source episodes.

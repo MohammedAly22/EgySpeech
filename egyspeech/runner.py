@@ -24,6 +24,7 @@ STEP_ENV = {
     "speaker_check": "nemo",
     "filter": "main",
     "review": "main",
+    "tune": "main",
     "push_chunks": "main",
     "pull_chunks": "main",
     "transcribe": None,
@@ -38,7 +39,7 @@ STEPS = list(STEP_ENV)
 # `run --stage local`: episodes on disk -> clean single-speaker clips (a small GPU is enough);
 # `run --stage gpu`: transcription and everything after it (after pull_chunks on a GPU machine).
 STAGES = {
-    "local": ["index", "separate", "diarize", "segment", "quality", "speaker_check", "filter", "review"],
+    "local": ["index", "separate", "diarize", "segment", "quality", "speaker_check", "filter", "review", "tune"],
     "gpu": ["transcribe", "verify", "align", "cluster", "balance", "analysis", "publish"],
 }
 STAGES["all"] = STAGES["local"] + STAGES["gpu"]

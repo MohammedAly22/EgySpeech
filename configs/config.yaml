@@ -93,17 +93,18 @@ quality:
 # ---------------------------------------------------------------- filter ----
 # Scores are cached: change thresholds and re-run `filter` (seconds).
 filter:
-  # Strict: no bad clip may pass (tuned on the 5-video pilot by listening: 483 clips -> 233 kept;
-  # every clip labeled bad - noise up to BAK 3.47, music, effects, interruption - is rejected with margin).
-  min_dnsmos_ovrl: 3.0          # overall quality
-  min_dnsmos_sig: 3.3           # speech distortion
-  min_dnsmos_bak: 3.7           # background noise / music / effects (noisy pilot clips scored up to 3.47)
-  min_utmos: 2.2                # naturalness
-  min_window_similarity: 0.75   # every 3 s window must match the clip's voice: catches a second speaker
-  max_clip_ratio: 0.001         # fraction of clipped samples
-  min_speech_ratio: 0.55        # speech / clip duration
-  drop_weak_cuts: false         # true = keep only clips cut at real pauses
-  max_edge_db: -5.0             # loudest 10 ms at each clip edge vs. the speech level: clear speech at the cut
+  # Reject only background noise / music / effects and second speakers. Tune interactively:
+  # `python -m egyspeech.cli tune` -> review/tuner.html, then paste its block here. null = metric off.
+  min_dnsmos_bak: 3.0               # Background (DNSMOS BAK): noise, music, sound effects
+  min_window_similarity: null       # Single speaker (voice consistency)
+  min_dnsmos_sig: null              # Speech signal (DNSMOS SIG)
+  min_dnsmos_ovrl: null             # Overall (DNSMOS OVRL)
+  min_dnsmos_p808: null             # Overall (DNSMOS P.808)
+  min_utmos: null                   # Naturalness (UTMOS)
+  min_speech_ratio: null            # Speech ratio
+  max_clip_ratio: null              # Clipping
+  max_edge_db: null                 # Edge loudness (segmentation already cuts in silences)
+  drop_weak_cuts: false
 
 # --------------------------------------------------------- transcription ----
 transcription:

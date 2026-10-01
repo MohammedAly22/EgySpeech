@@ -35,29 +35,40 @@ def load_joined(cfg: Section) -> list[dict]:
     return rows
 
 
+# config key -> (clip metric, "min" = reject below / "max" = reject above, rejection reason).
+# A threshold set to null in the config disables that rule (the `tune` page writes these keys).
+RULES = {
+    "min_dnsmos_bak": ("dnsmos_bak", "min", "dnsmos_bak"),
+    "min_window_similarity": ("window_similarity", "min", "multi_speaker"),
+    "min_dnsmos_sig": ("dnsmos_sig", "min", "dnsmos_sig"),
+    "min_dnsmos_ovrl": ("dnsmos_ovrl", "min", "dnsmos_ovrl"),
+    "min_dnsmos_p808": ("dnsmos_p808", "min", "dnsmos_p808"),
+    "min_utmos": ("utmos", "min", "utmos"),
+    "min_speech_ratio": ("speech_ratio", "min", "low_speech"),
+    "max_clip_ratio": ("clip_ratio", "max", "clipping"),
+    "max_edge_db": ("edge_db", "max", "edge_not_silent"),
+}
+
+
+def edge_db(r: dict) -> float | None:
+    """The louder of the two clip edges, dB relative to the clip's speech (near 0 = speech at the cut)."""
+    edges = [e for e in (r.get("edge_start_db"), r.get("edge_end_db")) if e is not None]
+    return max(edges) if edges else None
+
+
 def reasons(r: dict, f: Section, s: Section) -> list[str]:
     out = []
     if not s.min_sec <= r["duration"] <= s.max_sec:
         out.append("duration")
-    if r["dnsmos_ovrl"] < f.min_dnsmos_ovrl:
-        out.append("dnsmos_ovrl")
-    if r["dnsmos_sig"] < f.min_dnsmos_sig:
-        out.append("dnsmos_sig")
-    if r["dnsmos_bak"] < f.min_dnsmos_bak:
-        out.append("dnsmos_bak")
-    if r["utmos"] < f.min_utmos:
-        out.append("utmos")
-    if r["window_similarity"] < f.min_window_similarity:
-        out.append("multi_speaker")
-    if r["clip_ratio"] > f.max_clip_ratio:
-        out.append("clipping")
-    if r["speech_ratio"] < f.min_speech_ratio:
-        out.append("low_speech")
-    if f.drop_weak_cuts and r["weak_cut"]:
+    for key, (metric, side, why) in RULES.items():
+        limit = f.get(key)
+        x = edge_db(r) if metric == "edge_db" else r.get(metric)
+        if limit is None or x is None:
+            continue
+        if (x < limit) if side == "min" else (x > limit):
+            out.append(why)
+    if f.get("drop_weak_cuts") and r.get("weak_cut"):
         out.append("weak_cut")
-    edges = [r.get("edge_start_db"), r.get("edge_end_db")]
-    if any(e is not None and e > f.max_edge_db for e in edges):
-        out.append("edge_not_silent")  # starts or ends inside speech
     return out
 
 
