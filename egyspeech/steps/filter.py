@@ -1,14 +1,6 @@
 """Step 8 — filter: keep clean, single-speaker clips (thresholds from config; re-run freely).
 
-Two stages:
-  1. hard limits (filter.hard): unambiguous defects; any one rejects the clip
-     (far too noisy, a clearly different voice, clipping, mostly silence, ...);
-  2. weighted risk (filter.risk): each metric adds risk from 0 (at its `good` value)
-     to its `weight` (at its `bad` value, linear in between). The clip is rejected when
-     the total reaches filter.max_risk. One borderline score is tolerated; several
-     weak signs together (a bit of background + a loud edge + a low UTMOS) are not.
-
-Only kept clips are transcribed, so ASR time is never spent on noisy / music /
+Only these clips are transcribed, so ASR time is never spent on noisy / music /
 multi-speaker audio.
 """
 
@@ -43,53 +35,29 @@ def load_joined(cfg: Section) -> list[dict]:
     return rows
 
 
-HARD_RULES = {  # config key -> (metric, reject when the metric is below / above, reason)
-    "min_dnsmos_ovrl": ("dnsmos_ovrl", "below", "dnsmos_ovrl"),
-    "min_dnsmos_sig": ("dnsmos_sig", "below", "dnsmos_sig"),
-    "min_dnsmos_bak": ("dnsmos_bak", "below", "dnsmos_bak"),
-    "min_utmos": ("utmos", "below", "utmos"),
-    "min_window_similarity": ("window_similarity", "below", "multi_speaker"),
-    "max_clip_ratio": ("clip_ratio", "above", "clipping"),
-    "min_speech_ratio": ("speech_ratio", "below", "low_speech"),
-    "max_edge_db": ("edge_db", "above", "edge_not_silent"),
-}
-
-
-def metrics(r: dict) -> dict:
-    """The row plus derived metrics (edge_db = the louder of the two clip edges)."""
-    edges = [e for e in (r.get("edge_start_db"), r.get("edge_end_db")) if e is not None]
-    return {**r, "edge_db": max(edges) if edges else None}
-
-
-def risk(r: dict, f: Section) -> tuple[float, dict[str, float]]:
-    """(total risk, contribution per metric) of a clip under filter.risk."""
-    m = metrics(r)
-    contrib = {}
-    for name, spec in (f.get("risk") or {}).items():
-        x = m.get(name)
-        if x is None:
-            continue
-        good, bad, weight = float(spec["good"]), float(spec["bad"]), float(spec["weight"])
-        share = (good - x) / (good - bad)  # 0 at good, 1 at bad (works for both directions)
-        contrib[name] = round(weight * min(1.0, max(0.0, share)), 3)
-    return round(sum(contrib.values()), 3), contrib
-
-
 def reasons(r: dict, f: Section, s: Section) -> list[str]:
-    """Why a clip is rejected (empty = kept): hard limits, then the combined risk."""
-    m = metrics(r)
     out = []
     if not s.min_sec <= r["duration"] <= s.max_sec:
         out.append("duration")
-    for key, value in (f.get("hard") or {}).items():
-        metric, side, why = HARD_RULES[key]
-        x = m.get(metric)
-        if x is not None and (x < value if side == "below" else x > value):
-            out.append(why)
-    if f.drop_weak_cuts and r.get("weak_cut"):
+    if r["dnsmos_ovrl"] < f.min_dnsmos_ovrl:
+        out.append("dnsmos_ovrl")
+    if r["dnsmos_sig"] < f.min_dnsmos_sig:
+        out.append("dnsmos_sig")
+    if r["dnsmos_bak"] < f.min_dnsmos_bak:
+        out.append("dnsmos_bak")
+    if r["utmos"] < f.min_utmos:
+        out.append("utmos")
+    if r["window_similarity"] < f.min_window_similarity:
+        out.append("multi_speaker")
+    if r["clip_ratio"] > f.max_clip_ratio:
+        out.append("clipping")
+    if r["speech_ratio"] < f.min_speech_ratio:
+        out.append("low_speech")
+    if f.drop_weak_cuts and r["weak_cut"]:
         out.append("weak_cut")
-    if not out and risk(r, f)[0] >= f.max_risk:
-        out.append("combined_risk")
+    edges = [r.get("edge_start_db"), r.get("edge_end_db")]
+    if any(e is not None and e > f.max_edge_db for e in edges):
+        out.append("edge_not_silent")  # starts or ends inside speech
     return out
 
 
@@ -102,7 +70,6 @@ def main(cfg: Section, args):
     kept = []
     for r in rows:
         why = reasons(r, cfg.filter, cfg.segmentation)
-        r["filter_risk"] = risk(r, cfg.filter)[0]
         counts.update(why)
         if not why:
             kept.append(r)
