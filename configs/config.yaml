@@ -93,16 +93,18 @@ quality:
 # ---------------------------------------------------------------- filter ----
 # Scores are cached: change thresholds and re-run `filter` (seconds).
 filter:
-  min_dnsmos_ovrl: 3.0
-  min_dnsmos_sig: 3.3
-  min_dnsmos_bak: 3.6
-  min_utmos: 2.8
-  min_window_similarity: 0.45   # every 3 s window must match the clip's voice (single speaker)
+  # Tuned on the 5-video pilot by listening (483 clips -> 408 kept). Every clip labeled bad
+  # (noise, music, sound effects, interruption) is rejected.
+  min_dnsmos_ovrl: 2.4          # overall; the pilot interruption clip scored 2.23
+  min_dnsmos_sig: 3.0           # speech distortion
+  min_dnsmos_bak: 3.3           # background noise / music / effects: noisy pilot clips scored up to 3.18
+  min_utmos: 1.8                # UTMOS is trained on English and scores Arabic low: only a floor for broken audio
+  min_window_similarity: 0.70   # every 3 s window must match the clip's voice: catches a second speaker
   max_clip_ratio: 0.001         # fraction of clipped samples
   min_speech_ratio: 0.55        # speech / clip duration
   drop_weak_cuts: false         # true = keep only clips cut at real pauses
-  max_edge_db: -25.0            # loudest 10 ms in the first / last 40 ms must be this far below the speech
-                                # level: every clip starts and ends in silence, never inside a word
+  max_edge_db: -5.0             # loudest 10 ms at each clip edge vs. the speech level: only clear speech at the cut
+                                # (a word starting right at the cut sounds fine, so stricter values drop valid clips)
 
 # --------------------------------------------------------- transcription ----
 transcription:
