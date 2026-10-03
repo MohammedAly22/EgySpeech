@@ -230,38 +230,51 @@ The model's output is validated: unknown tags are removed, unclosed spans are cl
 | `segmentation.min_pause_sec / guard_sec` | `0.2 / 0.15` | shortest pause used as a cut; distance from other voices |
 | `segmentation.allow_weak_cuts` | `false` | `true` = also cut long pause-less turns at energy dips (not silence) |
 | `segmentation.workers / memory_gb` | `8 / 24` | parallel episodes and the RAM they may use together |
-| `filter.max_edge_db` | `-25` | clip edges must be this far below the speech level (silence) |
-| `filter.min_dnsmos_ovrl / sig / bak` | `3.0 / 3.3 / 3.6` | DNSMOS thresholds |
-| `filter.min_utmos` | `2.8` | naturalness threshold |
-| `filter.min_window_similarity` | `0.45` | single-speaker check |
+| `filter.min_dnsmos_bak` | `3.6` | background noise / music / effects (DNSMOS BAK) |
+| `filter.min_window_similarity` | `0.78` | single speaker: every 3 s window matches the clip's voice |
+| `filter.<other metrics>` | `null` | SIG, OVRL, P.808, UTMOS, speech ratio, clipping, edge loudness: `null` = off |
 | `alignment.min_score` | `-3.0` | transcript/audio agreement |
 | `speakers.merge_similarity` | `0.65` | merge per-episode speakers into one person |
 | `balance.max_hours_per_speaker / max_speaker_share` | `8 h / 3 %` | no dominant speaker |
 | `hub.chunks_repo_id / private` | – / `true` | the untranscribed chunk dataset (`push_chunks` / `pull_chunks`) |
 | `publish.enabled / private` | `false / true` | push to the Hub, private |
 
-Tune the quality thresholds with the histograms in `05_quality_filter.ipynb` — scores are cached, so `python -m egyspeech.cli filter` re-applies them in seconds.
+Tune the filter by ear with `python -m egyspeech.cli tune` → `review/tuner.html`: switch metrics on / off, move thresholds, listen to accepted and rejected clips, copy the `filter:` block it shows. Scores are cached, so `python -m egyspeech.cli filter` re-applies new thresholds in seconds.
 
 ---
 
-## ⏱️ GPU, time and disk
+## ⏱️ Hardware, time and disk
 
-Rough figures **per 1,000 h of downloaded episodes** on one H100 / RTX PRO 6000 class GPU with 16+ vCPU. Measure your own with the 5-video pilot (`run --limit 5`) before scaling.
+Measured on the first ~1,800 h (1,331 episodes) and a 27-episode pilot:
 
-| step | resource | time |
+| | per hour of episode audio | ~1,800 h |
 |---|---|---|
-| download | network | 5–15 h (YouTube throttling; can run on a cheap CPU pod on the same volume) |
-| separate (optional) | GPU | ~25–55 h if **every** episode needs it; off by default |
-| diarize | GPU | 1–2 h |
-| segment | CPU (8 workers) | 2–4 h |
-| quality + speaker_check | CPU + GPU | 2–4 h |
-| transcribe — `qwencleo` / `cohere` | GPU | 2–5 h (only the ~50–60 % that passes the filter) |
-| transcribe — `llm` with tags | GPU (vLLM) | 5–12 h |
-| align, cluster, balance, analysis | GPU / CPU | 1–2 h |
+| episodes (FLAC, 24 kHz mono) | ~170 MB | ~305 GB |
+| single-speaker clips (all, before the filter) | ~0.48 h of clips, ~44 MB | ~860 h, ~77 GB |
+| clips kept by the filter (BAK ≥ 3.6, voice ≥ 0.78) | ~0.32 h | ~570 h, ~52 GB |
+| conda envs + models (fixed) | | ~45 GB |
 
-**Plan:** ~2,000 h of episodes → ~1,000 h of final clips takes about **1–3 days on one GPU** without separation (≈ $100–300 on RunPod depending on GPU and the ASR backend). On a laptop GPU (e.g. GTX 1660 Ti) the local stage is several times slower: the progress bars show the measured speed (× real time) and ETA after the first videos.
+**Volume:**
 
-**Disk** for ~2,000 h of episodes: FLAC episodes ≈ 340 GB, clips ≈ 60–70 % of that before filtering. `storage.delete_rejected_clips` reclaims the space of rejected clips once you are happy with the thresholds.
+| plan | volume |
+|---|---|
+| everything on one pod (download → publish) | **500 GB** for ~1,800 h (600 GB for ~2,500 h) |
+| clips made elsewhere, pod only for `pull_chunks` → `publish` | **150 GB** |
+
+Set `storage.delete_rejected_clips: true` to drop rejected clip audio once the filter is final.
+
+**Hardware per stage:**
+
+| stage | steps | needs |
+|---|---|---|
+| download | `download` | CPU only (4+ vCPU), network-bound — a cheap CPU pod on the same volume |
+| clips | `index` … `filter` | GPU ≥ 16 GB (RTX 4090 / L4 / A5000; a 6 GB laptop GPU works, slower), **16–32 vCPU**, **64 GB RAM** (segmentation + DNSMOS run on CPU workers) |
+| v1 transcripts | `transcribe` (QwenCleo / Cohere / Parakeet), `align`, `cluster` … `publish` | one 24 GB GPU (RTX 4090 / L4 / A10; A100 / H100 is faster), 8+ vCPU, 32 GB RAM |
+| v2 tags | `transcribe` with `backend: llm` (Qwen3-Omni-30B-A3B on vLLM) | **H100 80 GB or RTX PRO 6000 96 GB** (BF16); 48 GB with `QUANT=fp8` |
+
+Diarization runs long episodes in 30-minute windows (`diarization.window_min`), so GPU memory does not grow with episode
+length: a GTX 1660 Ti (6 GB) diarizes at ~90–100× real time (~18 h for 1,800 h); data-center GPUs are several times
+faster. Every bar shows the measured speed (× real time) and ETA after the first videos.
 
 ---
 
@@ -292,7 +305,8 @@ On the Hub the same columns are published with an `audio` column (24 kHz), split
 | a step crashed | fix the cause and re-run the same command — finished videos are skipped |
 | `no kernel image is available` | re-run `bash scripts/install.sh` (it picks the CUDA build for your GPU) |
 | LLM backend: connection refused | start `bash scripts/serve_llm.sh` and check `transcription.llm.url` |
-| too few clips pass | look at `05_quality_filter.ipynb` and relax thresholds, then `cli filter` |
+| too few clips pass | open `review/tuner.html` (`cli tune`), relax thresholds, then `cli filter` |
+| many videos failed in `diarize` | the step restarts itself after a GPU error; lower `diarization.window_min` on small GPUs |
 | PNG figures missing | Plotly's PNG export needs Chrome (`python -c "import kaleido; kaleido.get_chrome_sync()"`); HTML figures are always saved |
 
 ---

@@ -55,6 +55,8 @@ diarization:
   spkcache_len: 188
   speaker_threshold: 0.5        # frame belongs to a speaker above this probability
   other_speaker_threshold: 0.2  # ...and every other speaker must be below this (no overlap)
+  window_min: 30                # long episodes are diarized in windows of this length (bounded GPU memory)...
+  window_overlap_sec: 120       # ...overlapping by this much; speakers are matched across windows on the overlap
 
 # ------------------------------------------------------------ segmentation ----
 segmentation:

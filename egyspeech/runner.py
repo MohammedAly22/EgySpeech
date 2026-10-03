@@ -43,6 +43,7 @@ STAGES = {
     "gpu": ["transcribe", "verify", "align", "cluster", "balance", "analysis", "publish"],
 }
 STAGES["all"] = STAGES["local"] + STAGES["gpu"]
+RESTART = 75  # a step exits with this to be restarted in a fresh process (e.g. broken GPU state)
 BACKEND_ENV = {"qwencleo": "qwen", "cohere": "main", "parakeet": "nemo", "llm": "main"}
 
 
@@ -75,4 +76,10 @@ def run_step(step: str, cfg: Section, extra: list[str] | None = None) -> int:
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     # ffmpeg / sox of the env on PATH, as `conda activate` would do
     env["PATH"] = str(Path(python).parent) + os.pathsep + env.get("PATH", "")
-    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
+    code = 0
+    for attempt in range(2, 102):
+        code = subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
+        if code != RESTART:
+            return code
+        print(f"\n==> [{step}] restarting in a fresh process (attempt {attempt})", flush=True)
+    return code
