@@ -112,7 +112,8 @@ def test_hub_shard_roundtrip(tmp_path):
         p = tmp_path / f"c{k}.flac"
         sf.write(p, tone(6 + k), SR, subtype="PCM_16")
         row = {name: None for name in features}
-        row.update(id=f"vidABCDEFGH_s0_{k:04d}", video_id="vidABCDEFGH", local_speaker=0, start=10.0 * k,
+        row.update(id=f"vidABCDEFGH_s0_{k:04d}", video_id="vidABCDEFGH", local_speaker=0, speaker_id="MALE_00001",
+                   gender="male", start=10.0 * k,
                    end=10.0 * k + 6 + k, duration=6.0 + k, source="original", start_cut="pause", end_cut="turn",
                    weak_cut=False, edge_start_db=-50.0, edge_end_db=-48.0, dnsmos_p808=3.5, dnsmos_sig=3.6,
                    dnsmos_bak=4.0, dnsmos_ovrl=3.3, utmos=3.4, window_similarity=0.8, video_title="t",
@@ -127,12 +128,12 @@ def test_hub_shard_roundtrip(tmp_path):
     assert type(ds.features["audio"]).__name__ == "Audio" and len(ds) == 3
 
     cfg = Section({"work_dir": str(tmp_path / "work"), "segmentation": {"audio_format": "flac"}})
-    n, sec = unpack(shard, cfg)
-    assert n == 3 and abs(sec - 21.0) < 1e-6
+    n, sec, spk = unpack(shard, cfg)
+    assert n == 3 and abs(sec - 21.0) < 1e-6 and spk[rows[0]["id"]] == ("MALE_00001", "male")
     work = tmp_path / "work"
     meta = read_jsonl(work / "meta" / "chunks" / "vidABCDEFGH.jsonl")
     assert [m["id"] for m in meta] == [r["id"] for r in rows]
-    assert "dnsmos_ovrl" not in meta[0] and "speaker_embedding" not in meta[0]
+    assert "dnsmos_ovrl" not in meta[0] and "speaker_embedding" not in meta[0] and "speaker_id" not in meta[0]
     wav, sr = sf.read(meta[1]["path"], dtype="float32")
     assert sr == SR and abs(len(wav) - 7 * SR) <= 1
     z = np.load(work / "meta" / "speakers" / "vidABCDEFGH.npz")

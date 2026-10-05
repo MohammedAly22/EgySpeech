@@ -55,22 +55,23 @@ flowchart LR
 | 2 | `index` | main | list the episodes on disk (any folder of `<title> [<id>].flac` works) with durations | `meta/videos.jsonl` |
 | 3 | `separate` | main | *optional* vocal stem (`separation.mode: auto / always`; default `never`) | `audio/vocals/` |
 | 4 | `diarize` | nemo | NVIDIA Streaming Sortformer v2.1, frame probabilities (next episode decoded while the GPU works) | `diar/` |
-| 5 | `segment` | main | VAD + energy silences, pause-aware planner, single-speaker 5–30 s clips, loudness norm, edge-silence measurement (parallel, RAM-budgeted) | `chunks/`, `meta/chunks/` |
+| 5 | `segment` | main | one chunk per single-speaker **diarization turn** (2–30 s, overlaps left out, long turns split at quiet moments; `method: vad` = pause planner), loudness norm | `chunks/`, `meta/chunks/` |
 | 6 | `quality` | main | DNSMOS (CPU pool) + UTMOS (GPU), concurrently | `meta/quality/` |
 | 7 | `speaker_check` | nemo | TitaNet window embeddings → single-speaker score, voice embedding | `meta/speakers/` |
-| 8 | `filter` | main | thresholds → clips worth transcribing (re-run freely) | `meta/filtered.jsonl` |
+| 8 | `filter` | main | quality thresholds, then **speaker cap** (`--max-hours N`, every speaker kept); prints speakers / hours stats (re-run freely, `--dry-run`) | `meta/filtered.jsonl` |
 | 9 | `review` | main | listening page: random kept clips + examples of every rejection reason | `review/index.html` |
 | 10 | `push_chunks` | main | filtered clips (no transcripts) → private Hub dataset, resumable shards | 🤗 |
 | 11 | `pull_chunks` | main | (GPU machine) Hub dataset → clips + metadata on disk | `chunks/`, `meta/` |
 | 12 | `transcribe` | per backend | ASR on filtered clips + hallucination / truncation checks | `meta/transcripts/<backend>/` |
 | 13 | `verify` | per backend | *optional* second ASR → agreement (CER) filter | `meta/transcripts/<backend2>/` |
 | 14 | `align` | main | word timestamps, alignment score, no-word-cut edge check | `meta/aligned/` |
-| 15 | `cluster` | main | global speakers across episodes + gender | `meta/speakers.json` |
+| 15 | `cluster` | main | global speaker IDs across episodes (`MALE_00001`, `FEMALE_00002`, …) from TitaNet voice prints + gender | `meta/speakers.json` |
 | 16 | `balance` | main | final selection, per-speaker caps, train/validation/test | `final/` |
 | 17 | `analysis` | main | statistics + figures | `graphs/`, `final/stats.json` |
 | 18 | `publish` | main | push the final dataset to the Hub (private) + dataset card | 🤗 |
 
-`run --stage local` = steps 2–9, `run --stage gpu` = steps 12–18.
+`run --stage local` = index → diarize → segment → speaker_check → cluster, then `push_chunks`;
+`run --stage gpu` (after `pull_chunks`) = quality → filter → transcribe → verify → align → balance → analysis → publish.
 
 Steps run in different conda envs because their libraries conflict (QwenCleo needs `transformers==4.57.6`, Cohere/vLLM need `transformers>=5`); the CLI starts each step in the right env for you.
 
@@ -140,24 +141,25 @@ python -m egyspeech.cli transcribe --limit 3         # try a backend on 3 videos
 python -m egyspeech.cli segment --watch              # segment while diarize runs in another terminal
 ```
 
-### Two stages: clips on a small machine, transcripts on a big GPU
-
-Everything up to `filter` needs only a modest GPU (diarization, UTMOS, TitaNet). Prepare the clips where
-the episodes are, push them to a private dataset, and transcribe on a large GPU:
+### Two stages: chunks on a small machine, quality + transcripts on a big GPU (EgySpeech v1)
 
 ```bash
-# machine with the episodes (e.g. a laptop; see configs/local.yaml)
-python -m egyspeech.cli run --stage local
-python -m egyspeech.cli push_chunks        # set hub.chunks_repo_id; `hf auth login` first
+# 1. machine with the episodes (laptop; configs/local.yaml)
+python -m egyspeech.cli run --stage local          # diarization chunks + global speaker IDs + gender
+python -m egyspeech.cli push_chunks                # all chunks -> chunks/ of MohammedAly22/EgySpeech-V1 (private)
 
-# GPU machine
-python -m egyspeech.cli pull_chunks        # same hub.chunks_repo_id
-python -m egyspeech.cli run --stage gpu    # transcribe -> align -> cluster -> balance -> analysis -> publish
+# 2. GPU machine
+python -m egyspeech.cli pull_chunks
+python -m egyspeech.cli quality                    # DNSMOS + UTMOS for every chunk
+python -m egyspeech.cli filter --max-hours 15 --dry-run   # compare caps: speakers, mean / min / max hours
+python -m egyspeech.cli filter --max-hours 15      # write the selection
+python -m egyspeech.cli run --stage gpu --from transcribe  # transcribe -> align -> balance -> analysis -> publish
 ```
 
-The chunk dataset has every column the later steps need (segmentation info, DNSMOS / UTMOS, voice
-consistency, the TitaNet speaker embedding, video title / playlist / channel) plus the audio.
-Set `EGYSPEECH_CONFIG=configs/local.yaml` (or pass `--config`) to use another config file.
+The chunk dataset (`load_dataset("MohammedAly22/EgySpeech-V1", "chunks")`) has every chunk with its speaker ID,
+gender, TitaNet embedding and segmentation info; `publish` adds the final transcribed dataset as the default
+config (`data/`) of the same private repository. Set `EGYSPEECH_CONFIG=configs/local.yaml` (or pass `--config`)
+to use another config file.
 
 ### 5 · Explore every step in Jupyter
 

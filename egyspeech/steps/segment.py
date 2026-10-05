@@ -1,19 +1,20 @@
-"""Step 5 — segment: single-speaker 5-30 s clips cut in silences, loudness normalized.
+"""Step 5 — segment: single-speaker clips, loudness normalized (two methods).
 
-Per video (CPU, several videos in parallel):
-  1. decode the episode at 16 kHz; Silero VAD (run as parallel streams: ~3x faster) and
-     frame energy;
-  2. Sortformer probabilities + VAD + energy -> the pause-aware planner
-     (egyspeech/segmenter.py): only frames where exactly one speaker talks, a guard
-     distance from every other voice, boundaries only inside real pauses;
-  3. every clip is read straight from the episode file at 24 kHz (seek, no full decode),
-     measured (silence at both edges, other-speaker activity, clipping), loudness
-     normalized, faded in / out over a few ms, and written as FLAC.
+segmentation.method: diarization (default)
+  The diarizer's speaker turns are the clips: frames where exactly one speaker is active
+  (prob > 0.5, every other speaker below it), short gaps inside a speaker's turn bridged,
+  a little padding where nobody else speaks. Overlapping speech is left out. Turns longer
+  than diar_max_sec are split at the quietest moments (energy); shorter than diar_min_sec
+  are dropped. Nothing else is filtered here.
 
-Workers share a RAM budget (segmentation.memory_gb): a 4 h episode needs ~2.5 GB,
-so long episodes never run out of memory together.
---watch keeps running while `diarize` works in another terminal and segments every
-newly diarized video as soon as it is ready.
+segmentation.method: vad
+  Silero VAD + energy pauses + the pause-aware planner (egyspeech/segmenter.py): 5-30 s
+  clips cut only inside silences, a guard distance from other voices.
+
+Every clip is read straight from the episode file at 24 kHz (seek, no full decode),
+measured (edges, other-speaker activity, clipping), loudness normalized, faded in / out
+over a few ms and written as FLAC. Videos run in parallel (RAM-budgeted workers).
+--watch keeps segmenting newly diarized videos while `diarize` runs in another terminal.
 """
 
 import logging
@@ -134,9 +135,126 @@ def fade(x: np.ndarray, sr: int, ms: float) -> np.ndarray:
     return x
 
 
-def memory_gb(video: dict) -> float:
+def memory_gb(video: dict, method: str = "vad") -> float:
     """Peak RAM of one worker for this episode: 16 kHz audio + the VAD batch + the process itself."""
+    if method == "diarization":
+        return 0.5  # clips are read one by one: no full episode in memory
     return 0.5 + 0.5 * (video.get("duration") or 3600) / 3600
+
+
+def diar_turns(probs: np.ndarray, frame_sec: float, min_sec: float, max_gap_sec: float,
+               pad_sec: float) -> list[tuple[int, float, float, float]]:
+    """(speaker, start s, end s, share of frames the speaker is active) single-speaker turns.
+
+    A frame belongs to speaker k when k's probability is above 0.5 and every other
+    speaker's is below 0.5. Gaps up to max_gap_sec where nobody speaks are bridged;
+    turns are padded by pad_sec where nobody speaks (never into another speaker).
+    """
+    n, S = probs.shape
+    active = probs > 0.5
+    count = active.sum(axis=1)
+    nobody = count == 0
+    gap = int(round(max_gap_sec / frame_sec))
+    pad = int(round(pad_sec / frame_sec))
+    turns = []
+    for k in range(S):
+        own = active[:, k] & (count == 1)
+        if not own.any():
+            continue
+        on = np.concatenate([[False], own, [False]])
+        d = np.diff(on.astype(np.int8))
+        runs = list(zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1), strict=True))
+        merged = [list(runs[0])]
+        for a, b in runs[1:]:
+            if a - merged[-1][1] <= gap and nobody[merged[-1][1] : a].all():
+                merged[-1][1] = b
+            else:
+                merged.append([a, b])
+        for a, b in merged:
+            lo = a
+            while lo > 0 and a - lo < pad and nobody[lo - 1]:
+                lo -= 1
+            hi = b
+            while hi < n and hi - b < pad and nobody[hi]:
+                hi += 1
+            if (hi - lo) * frame_sec >= min_sec:
+                turns.append((k, lo * frame_sec, hi * frame_sec, float(own[a:b].mean())))
+    return sorted(turns, key=lambda t: t[1])
+
+
+def split_points(x: np.ndarray, sr: int, max_sec: float, search_sec: float = 3.0) -> list[int]:
+    """Sample positions splitting x into pieces <= max_sec, each at the quietest 100 ms nearby."""
+    dur = len(x) / sr
+    if dur <= max_sec:
+        return []
+    pieces = int(np.ceil(dur / max_sec))
+    hop = int(0.01 * sr)
+    n = len(x) // hop
+    fr = x[: n * hop].reshape(n, hop)
+    db = 10 * np.log10(np.einsum("ij,ij->i", fr, fr) / hop + 1e-10)
+    db = np.convolve(db, np.ones(10) / 10, mode="same")  # 100 ms
+    cuts, prev = [], 0
+    for i in range(1, pieces):
+        target = int(i * n / pieces)
+        lo = max(prev + int(1.0 / 0.01), target - int(search_sec / 0.01))
+        hi = min(n - int(1.0 / 0.01), target + int(search_sec / 0.01))
+        if lo >= hi:
+            continue
+        c = lo + int(np.argmin(db[lo:hi]))
+        if (c - prev) * 0.01 > max_sec:  # quiet spot too far: cut at the target
+            c = target
+        cuts.append(c * hop)
+        prev = c
+    return cuts
+
+
+def process_video_diar(v: dict, cfg: Section) -> list[dict]:
+    """Clips = the diarizer's single-speaker turns (long turns split at quiet moments)."""
+    lay = layout(cfg)
+    vid, sr, seg = v["id"], cfg.download.sample_rate, cfg.segmentation
+    probs = np.load(lay.diar_probs(vid)).astype(np.float32)
+    frame_sec = read_json(lay.diar_json(vid))["frame_sec"]
+    turns = diar_turns(probs, frame_sec, seg.diar_min_sec, seg.diar_max_gap_sec, seg.diar_pad_sec)
+    out_dir = lay.chunk_dir(vid)
+    if out_dir.exists():  # re-segmenting: never leave clips from an older plan behind
+        import shutil
+
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows, counters = [], {}
+    with ClipReader(speech_audio(cfg, v), sr) as reader:
+        for spk, start, end, share in turns:
+            whole = reader.read(start, end)
+            cuts = split_points(whole, sr, seg.diar_max_sec)
+            bounds = [0, *cuts, len(whole)]
+            for i in range(len(bounds) - 1):
+                x = whole[bounds[i] : bounds[i + 1]].copy()
+                if len(x) < seg.diar_min_sec * sr:
+                    continue
+                t0 = start + bounds[i] / sr
+                clip_ratio = float(np.mean(np.abs(x) >= 0.999))
+                edge_start, edge_end = edge_levels(x, sr)
+                x, loud = loudness_normalize(x, sr, seg.loudness_lufs, seg.peak_dbfs)
+                x = fade(x, sr, seg.fade_ms)
+                a, b = int(t0 / frame_sec), int((t0 + len(x) / sr) / frame_sec)
+                others = np.delete(probs[a:b], spk, axis=1)
+                k = counters.get(spk, 0)
+                counters[spk] = k + 1
+                cid = f"{vid}_s{spk}_{k:04d}"
+                path = out_dir / f"{cid}.{seg.audio_format}"
+                write_audio(path, x, sr)
+                rows.append({
+                    "id": cid, "video_id": vid, "local_speaker": spk, "path": str(path),
+                    "start": round(t0, 3), "end": round(t0 + len(x) / sr, 3), "duration": round(len(x) / sr, 3),
+                    "source": "original", "music_db": None,
+                    "input_lufs": round(loud, 2) if np.isfinite(loud) else None, "clip_ratio": clip_ratio,
+                    "start_cut": "turn" if i == 0 else "split", "end_cut": "turn" if i == len(bounds) - 2 else "split",
+                    "start_pause": 0.0, "end_pause": 0.0, "speech_ratio": round(share, 3),
+                    "max_internal_silence": None, "weak_cut": False,
+                    "edge_start_db": edge_start, "edge_end_db": edge_end,
+                    "other_spk_max": round(float(others.max()) if others.size else 0.0, 3),
+                })
+    return rows
 
 
 def process_video(v: dict, cfg: Section) -> list[dict]:
@@ -207,7 +325,7 @@ def _worker(v: dict, cfg_path: str) -> tuple[int, float]:
 
     torch.set_num_threads(1)
     cfg = load_config(cfg_path)
-    rows = process_video(v, cfg)
+    rows = process_video_diar(v, cfg) if cfg.segmentation.method == "diarization" else process_video(v, cfg)
     lay = layout(cfg)
     write_jsonl(lay.chunks_meta(v["id"]), rows)  # written last: marks the video as done
     if cfg.storage.delete_vocals_after_segment and cfg.separation.mode != "never":
@@ -223,7 +341,7 @@ def run_batch(cfg: Section, pending: list[dict], failures: list[dict]) -> float:
 
     seg = cfg.segmentation
     workers = max(1, int(seg.workers))
-    jobs = [(v, memory_gb(v), (v, cfg["_path"])) for v in pending]
+    jobs = [(v, memory_gb(v, seg.method), (v, cfg["_path"])) for v in pending]
     clip_hours = 0.0
     with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool, \
             StepBar("segment", len(pending), audio_sec=total_sec(pending)) as bar:

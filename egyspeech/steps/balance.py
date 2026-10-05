@@ -82,7 +82,8 @@ def candidates(cfg: Section) -> tuple[list[dict], dict]:
 
 
 def quality_score(r: dict) -> float:
-    return (r["utmos"] - 3.0) + (r["dnsmos_ovrl"] - 3.0) + 0.5 * (r["align_score"] + 1.0) - 0.5 * r["weak_cut"]
+    return ((r.get("utmos") or 3.0) - 3.0) + ((r.get("dnsmos_ovrl") or 3.0) - 3.0) + 0.5 * (r["align_score"] + 1.0) \
+        - 0.5 * bool(r.get("weak_cut"))
 
 
 def cap_speaker(rows: list[dict], cap_sec: float) -> list[dict]:
@@ -117,12 +118,14 @@ def main(cfg: Section, args):
         by_spk[r["speaker_id"]].append(r)
     total_sec = sum(r["duration"] for r in rows)
 
+    # optional caps (the filter step's --max-hours usually balances speakers already);
     # iterate the share cap: capping big speakers shrinks the total
-    cap_sec = b.max_hours_per_speaker * 3600
+    cap_sec = b.max_hours_per_speaker * 3600 if b.get("max_hours_per_speaker") else float("inf")
     for _ in range(5):
+        if not b.get("max_speaker_share"):
+            break
         capped = {s: min(sum(r["duration"] for r in rs), cap_sec) for s, rs in by_spk.items()}
-        share_cap = b.max_speaker_share * sum(capped.values())
-        new_cap = min(b.max_hours_per_speaker * 3600, share_cap) if b.max_speaker_share else cap_sec
+        new_cap = min(cap_sec, b.max_speaker_share * sum(capped.values()))
         if abs(new_cap - cap_sec) < 1.0:
             break
         cap_sec = new_cap
@@ -175,15 +178,14 @@ def main(cfg: Section, args):
 
     summary = {
         "candidates": len(rows), "candidate_hours": round(total_sec / 3600, 3), "rejections": stats,
-        "speaker_cap_hours": round(cap_sec / 3600, 3),
+        "speaker_cap_hours": round(cap_sec / 3600, 3) if cap_sec != float("inf") else None,
         "splits": {n: {"clips": len(s), "hours": h(s), "speakers": len({r["speaker_id"] for r in s})}
                    for n, s in (("train", train), ("validation", validation), ("test", test))},
         "total_hours": h(train + validation + test),
         "speakers": len({r["speaker_id"] for r in final}),
     }
     write_json(lay.final / "balance_summary.json", summary)
-    logger.info(f"final: {summary['total_hours']} h, {summary['speakers']} speakers, cap "
-                f"{summary['speaker_cap_hours']} h/speaker | {summary['splits']}")
+    logger.info(f"final: {summary['total_hours']} h, {summary['speakers']} speakers | {summary['splits']}")
 
 
 if __name__ == "__main__":

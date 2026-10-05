@@ -11,6 +11,7 @@ import logging
 from egyspeech.config import Section
 from egyspeech.io import read_json, read_jsonl
 from egyspeech.steps import layout, step_main
+from egyspeech.steps.push_chunks import CHUNKS_CONFIG
 
 logger = logging.getLogger("publish")
 
@@ -47,6 +48,16 @@ language:
 task_categories:
 - text-to-speech
 - automatic-speech-recognition
+configs:
+- config_name: default
+  data_files:
+  - split: train
+    path: data/train-*
+  - split: validation
+    path: data/validation-*
+  - split: test
+    path: data/test-*
+{CHUNKS_CONFIG}
 tags:
 - egyptian-arabic
 - code-switching

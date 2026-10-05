@@ -15,7 +15,7 @@ download:
   dir: /mnt/g/VoiceAgent/downloads_full    # used in place (nothing is copied); NA/ = videos without a playlist
 
 segmentation:
-  workers: 4                               # parallel episodes (CPU)
+  workers: 6                               # parallel episodes (CPU)
   memory_gb: 4.5                           # WSL's default RAM is ~7.7 GB; raise to 9 after giving WSL 12 GB
 
 quality:
@@ -23,4 +23,4 @@ quality:
   batch_size: 16                           # 6 GB GPU
 
 hub:
-  chunks_repo_id: mohammedaly22/egyspeech-chunks
+  chunks_repo_id: MohammedAly22/EgySpeech-V1

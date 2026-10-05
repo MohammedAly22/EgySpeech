@@ -1,15 +1,19 @@
-"""push_chunks — upload the filtered clips (no transcripts yet) to a private Hugging Face dataset.
+"""push_chunks — upload every chunk (no quality filter, no transcripts) to a private Hugging Face dataset.
 
-Every row is one clip: the audio (24 kHz FLAC, embedded) plus every column the later
-steps need — segmentation info, quality scores, voice consistency, the TitaNet speaker
-embedding, and the video's title / playlist / channel. On a GPU machine, `pull_chunks`
-turns the dataset back into the pipeline's files and `transcribe` ... `publish` continue.
+Every row is one chunk: the audio (24 kHz FLAC, embedded) plus every column the later
+steps need — segmentation info, the global speaker ID and gender (cluster step), the
+TitaNet speaker embedding and voice consistency, the episode's title / playlist / channel
+(and DNSMOS / UTMOS when the quality step already ran; empty otherwise). The chunks go
+to `chunks/` (dataset config "chunks"); the final transcribed dataset is published later
+to `data/` of the same repository by the `publish` step.
 
-Shards are Parquet files holding whole videos. They are written, uploaded in commits of
-hub.shards_per_commit and deleted locally, so the upload needs only a few GB of free
-disk. hub/manifest.json records the uploaded videos: re-running continues where it
-stopped and only adds new videos. --force deletes the remote shards and starts over
-(needed after changing filter thresholds).
+On a GPU machine, `pull_chunks` turns the dataset back into the pipeline's files, then
+`quality` -> `filter --max-hours N` -> `transcribe` ... `publish` continue.
+
+Shards are Parquet files holding whole videos, written, uploaded in commits of
+hub.shards_per_commit and deleted locally (a few GB of disk). hub/manifest.json records
+the uploaded videos: re-running continues where it stopped and only adds new videos.
+--force deletes the remote chunk shards and starts over.
 
 Authenticate first: `hf auth login` (or set HF_TOKEN).
 """
@@ -38,7 +42,7 @@ def chunk_features(sample_rate: int):
     f32, f64, i32, s, b = Value("float32"), Value("float64"), Value("int32"), Value("string"), Value("bool")
     return Features({
         "id": s, "audio": Audio(sampling_rate=sample_rate), "duration": f32,
-        "video_id": s, "video_title": s, "playlist": s, "channel": s,
+        "speaker_id": s, "gender": s, "video_id": s, "video_title": s, "playlist": s, "channel": s,
         "local_speaker": i32, "start": f64, "end": f64, "source": s, "music_db": f32, "input_lufs": f32,
         "clip_ratio": f32, "start_cut": s, "end_cut": s, "start_pause": f32, "end_pause": f32,
         "speech_ratio": f32, "max_internal_silence": f32, "weak_cut": b, "edge_start_db": f32,
@@ -59,8 +63,13 @@ def write_shard(rows: list[dict], features, path: Path) -> None:
     pq.write_table(table, str(path), row_group_size=100)  # small row groups: fast dataset viewer
 
 
+CHUNKS_CONFIG = """- config_name: chunks
+  data_files:
+  - split: train
+    path: chunks/*.parquet"""
+
+
 def dataset_card(repo_id: str, manifest: dict, cfg: Section) -> str:
-    f = cfg.filter
     return f"""---
 language:
 - ar
@@ -68,26 +77,46 @@ language:
 task_categories:
 - text-to-speech
 - automatic-speech-recognition
-pretty_name: EgySpeech chunks (untranscribed)
+pretty_name: EgySpeech
 configs:
-- config_name: default
-  data_files:
-  - split: train
-    path: data/*.parquet
+{CHUNKS_CONFIG}
 ---
 
-# EgySpeech — single-speaker clips (before transcription)
+# EgySpeech — single-speaker chunks (before transcription)
 
-{manifest['clips']:,} clips, {manifest['hours']:.1f} h of Egyptian Arabic speech from {len(manifest['videos']):,}
+{manifest['clips']:,} chunks, {manifest['hours']:.1f} h of Egyptian Arabic speech from {len(manifest['videos']):,}
 YouTube episodes, prepared by the [EgySpeech pipeline](https://github.com/MohammedAly22/EgySpeech):
-Sortformer diarization, clips of {cfg.segmentation.min_sec:g}-{cfg.segmentation.max_sec:g} s cut inside pauses,
-24 kHz mono FLAC loudness-normalized to {cfg.segmentation.loudness_lufs:g} LUFS.
+NVIDIA Sortformer diarization (one chunk per single-speaker turn, {cfg.segmentation.diar_min_sec:g}-{cfg.segmentation.diar_max_sec:g} s),
+24 kHz mono FLAC loudness-normalized to {cfg.segmentation.loudness_lufs:g} LUFS, global speaker IDs from TitaNet
+voice clustering (`speaker_id`, `gender`). No quality filter yet.
 
-Filter applied: {', '.join(f'{k} = {v}' for k, v in f.items() if v is not None and k != 'drop_weak_cuts') or 'none'}.
-
-Transcripts are added in the next stage (`python -m egyspeech.cli pull_chunks` on a GPU machine, then
-`run --stage gpu`). `metadata/videos.jsonl` lists the source episodes.
+`load_dataset("{repo_id}", "chunks")`. `metadata/videos.jsonl` lists the source episodes, `metadata/speakers.json`
+the speakers. Transcripts and quality filtering are added in the next stage.
 """
+
+
+def chunk_rows(cfg: Section) -> list[dict]:
+    """Every chunk with its speaker ID / gender, voice consistency and (if computed) quality scores."""
+    lay = layout(cfg)
+    spk = read_json(lay.speakers) if lay.speakers.exists() else None
+    if spk is None:
+        raise SystemExit("no speaker IDs: run speaker_check and cluster first")
+    assignment = spk["assignment"]
+    genders = {s["id"]: s["gender"] for s in spk["speakers"]}
+    rows = []
+    for v in videos(cfg):
+        vid = v["id"]
+        if not (lay.chunks_meta(vid).exists() and lay.speaker_emb(vid).exists()):
+            continue
+        q = {r["id"]: r for r in read_jsonl(lay.quality(vid))} if lay.quality(vid).exists() else {}
+        z = np.load(lay.speaker_emb(vid))
+        sim = dict(zip(z["ids"].tolist(), z["window_similarity"].tolist(), strict=True))
+        for c in read_jsonl(lay.chunks_meta(vid)):
+            if c["id"] in sim:
+                sid = assignment.get(c["id"])
+                rows.append({**c, **q.get(c["id"], {}), "window_similarity": float(sim[c["id"]]),
+                             "speaker_id": sid, "gender": genders.get(sid)})
+    return rows
 
 
 def main(cfg: Section, args):
@@ -99,19 +128,19 @@ def main(cfg: Section, args):
     h = cfg.hub
     repo = h.chunks_repo_id
     if not repo or repo.startswith("your-username/"):
-        raise SystemExit("set hub.chunks_repo_id in the config (e.g. mohammedaly22/egyspeech-chunks)")
-    rows = read_jsonl(lay.filtered)
+        raise SystemExit("set hub.chunks_repo_id in the config (e.g. MohammedAly22/EgySpeech-V1)")
+    rows = chunk_rows(cfg)
     if not rows:
-        raise SystemExit("no filtered clips: run the filter step first")
+        raise SystemExit("no chunks: run segment, speaker_check and cluster first")
     api = HfApi()
     api.create_repo(repo, repo_type="dataset", private=bool(h.private), exist_ok=True)
     manifest_path = lay.hub / "manifest.json"
     manifest = read_json(manifest_path) if manifest_path.exists() and not args.force else None
     if args.force:
-        existing = [f for f in api.list_repo_files(repo, repo_type="dataset") if f.startswith("data/")]
+        existing = [f for f in api.list_repo_files(repo, repo_type="dataset") if f.startswith("chunks/")]
         if existing:
-            logger.warning(f"--force: deleting {len(existing)} remote shards of {repo}")
-            api.delete_folder("data", repo_id=repo, repo_type="dataset", commit_message="reset chunk shards")
+            logger.warning(f"--force: deleting {len(existing)} remote chunk shards of {repo}")
+            api.delete_folder("chunks", repo_id=repo, repo_type="dataset", commit_message="reset chunk shards")
     if manifest is None or manifest.get("repo_id") != repo:
         manifest = {"repo_id": repo, "next_shard": 0, "videos": {}, "clips": 0, "hours": 0.0}
 
@@ -140,7 +169,7 @@ def main(cfg: Section, args):
                 return
             gb = sum(p.stat().st_size for p, *_ in staged) / 1e9
             bar.status(f"uploading {len(staged)} shards ({gb:.1f} GB)")
-            ops = [CommitOperationAdd(path_in_repo=f"data/train-{i:05d}.parquet", path_or_fileobj=str(p))
+            ops = [CommitOperationAdd(path_in_repo=f"chunks/part-{i:05d}.parquet", path_or_fileobj=str(p))
                    for p, i, *_ in staged]
             api.create_commit(repo, operations=ops, repo_type="dataset",
                               commit_message=f"add shards {staged[0][1]}-{staged[-1][1]}")
@@ -161,7 +190,7 @@ def main(cfg: Section, args):
                 return
             i = manifest["next_shard"]
             manifest["next_shard"] += 1
-            path = Path(tmp) / f"train-{i:05d}.parquet"
+            path = Path(tmp) / f"part-{i:05d}.parquet"
             bar.status(f"writing shard {i}")
             write_shard(buf, features, path)
             staged.append((path, i, buf_vids, len(buf), sum(r["duration"] for r in buf)))
@@ -193,7 +222,10 @@ def main(cfg: Section, args):
         write_jsonl(t / "videos.jsonl", [{k: v for k, v in meta[vid].items() if k not in ("path", "mtime")}
                                          for vid in sorted(pushed) if vid in meta])
         (t / "README.md").write_text(dataset_card(repo, manifest, cfg), encoding="utf-8")
-        files = {"metadata/videos.jsonl": t / "videos.jsonl", "README.md": t / "README.md"}
+        files = {"metadata/videos.jsonl": t / "videos.jsonl", "metadata/speakers.json": lay.speakers}
+        remote = api.list_repo_files(repo, repo_type="dataset")
+        if not any(f.startswith("data/") for f in remote):  # the final dataset (publish) has its own card
+            files["README.md"] = t / "README.md"
         if lay.filter_report.exists():
             files["metadata/filter_report.json"] = lay.filter_report
         (t / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")

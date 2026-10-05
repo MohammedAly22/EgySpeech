@@ -36,11 +36,13 @@ STEP_ENV = {
     "publish": "main",
 }
 STEPS = list(STEP_ENV)
-# `run --stage local`: episodes on disk -> clean single-speaker clips (a small GPU is enough);
-# `run --stage gpu`: transcription and everything after it (after pull_chunks on a GPU machine).
+# `run --stage local`: episodes on disk -> diarization chunks + global speaker IDs (a small GPU is enough),
+#                      then `push_chunks`;
+# `run --stage gpu`:   after `pull_chunks` on a GPU machine: quality -> filter (+ speaker cap) -> transcribe
+#                      -> align -> balance (splits) -> analysis -> publish.
 STAGES = {
-    "local": ["index", "separate", "diarize", "segment", "quality", "speaker_check", "filter", "review", "tune"],
-    "gpu": ["transcribe", "verify", "align", "cluster", "balance", "analysis", "publish"],
+    "local": ["index", "separate", "diarize", "segment", "speaker_check", "cluster"],
+    "gpu": ["quality", "filter", "transcribe", "verify", "align", "balance", "analysis", "publish"],
 }
 STAGES["all"] = STAGES["local"] + STAGES["gpu"]
 RESTART = 75  # a step exits with this to be restarted in a fresh process (e.g. broken GPU state)

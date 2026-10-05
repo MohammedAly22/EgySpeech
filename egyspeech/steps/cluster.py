@@ -1,10 +1,17 @@
-"""Step 12 — cluster: global speaker identities across videos + gender.
+"""cluster: one global ID per speaker across all episodes (MALE_00001, FEMALE_00002, ...).
 
-The diarizer labels speakers per video (s0, s1, ...). A podcast host appears in
-hundreds of episodes, so per-video speakers are merged into global speakers:
-mean TitaNet embedding per (video, local speaker) -> agglomerative clustering with
-cosine similarity >= speakers.merge_similarity. Gender is classified per global
-speaker from several of its clips (majority of probabilities).
+The diarizer labels speakers per episode (s0, s1, ...); a podcast host appears in many
+episodes. Using the TitaNet embedding of every chunk (speaker_check):
+  1. voice print per (episode, local speaker): duration-weighted mean of its chunk
+     embeddings, recomputed without chunks that do not match it (cosine < outlier_similarity);
+  2. reliable voice prints (>= min_group_sec of speech) are clustered across episodes
+     (agglomerative, average linkage, cosine >= merge_similarity = same person);
+  3. one refinement pass moves each voice print to the closest speaker centroid;
+  4. small voice prints join the closest speaker if similar enough, else stay their own speaker;
+  5. gender per speaker from several of its chunks (wav2vec2 classifier, mean probability).
+IDs are numbered by total hours (largest speaker first), with the gender as prefix.
+Runs on every chunk (no quality filter needed); writes meta/speakers.json
+{"speakers": [...], "assignment": {chunk id: speaker id}} and prints the statistics.
 """
 
 import logging
@@ -16,7 +23,7 @@ import numpy as np
 from egyspeech.config import Section
 from egyspeech.io import read_audio, read_json, read_jsonl, resample, write_json
 from egyspeech.progress import StepBar
-from egyspeech.steps import layout, step_main
+from egyspeech.steps import layout, step_main, videos
 
 logger = logging.getLogger("cluster")
 
@@ -51,72 +58,131 @@ class GenderClassifier:
         return float(sum(p[i] for i, l in self.labels.items() if l.startswith("f")))
 
 
+def unit(x: np.ndarray) -> np.ndarray:
+    return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-9)
+
+
+def voice_prints(cfg: Section) -> tuple[list[tuple[str, int]], np.ndarray, np.ndarray, dict, dict]:
+    """(group keys, voice prints [G, 192], seconds per group, chunks per group, chunk rows by id)."""
+    lay = layout(cfg)
+    sp = cfg.speakers
+    vids = [v["id"] for v in videos(cfg) if lay.chunks_meta(v["id"]).exists() and lay.speaker_emb(v["id"]).exists()]
+    keys, prints, secs, members, rows = [], [], [], {}, {}
+    with StepBar("cluster (voice prints)", len(vids)) as bar:
+        for vid in vids:
+            meta = {r["id"]: r for r in read_jsonl(lay.chunks_meta(vid))}
+            z = np.load(lay.speaker_emb(vid))
+            embs = unit(z["embeddings"].astype(np.float32))
+            ids = z["ids"].tolist()
+            by_spk: dict[int, list[int]] = defaultdict(list)
+            for i, (cid, spk) in enumerate(zip(ids, z["local_speaker"].tolist(), strict=True)):
+                if cid in meta:
+                    by_spk[int(spk)].append(i)
+                    rows[cid] = meta[cid]
+            for spk, idx in by_spk.items():
+                e = embs[idx]
+                w = np.array([meta[ids[i]]["duration"] for i in idx])
+                c = unit((e * w[:, None]).sum(0))
+                good = e @ c >= sp.outlier_similarity
+                if good.sum() >= max(1, len(idx) // 4):  # drop chunks that do not match the voice print
+                    c = unit((e[good] * w[good, None]).sum(0))
+                keys.append((vid, spk))
+                prints.append(c)
+                secs.append(float(w.sum()))
+                members[(vid, spk)] = [ids[i] for i in idx]
+            bar.advance()
+    return keys, np.array(prints, dtype=np.float32), np.array(secs), members, rows
+
+
+def assign_speakers(prints: np.ndarray, secs: np.ndarray, merge_similarity: float, min_group_sec: float) -> np.ndarray:
+    """Cluster label per voice print (see module doc, steps 2-4)."""
+    n = len(prints)
+    labels = np.full(n, -1)
+    big = np.flatnonzero(secs >= min_group_sec)
+    if len(big) == 0:
+        big = np.arange(n)
+    labels[big] = cluster_embeddings(prints[big], merge_similarity) if len(big) > 1 else 0
+
+    def centroids():
+        ids = np.unique(labels[labels >= 0])
+        cents = np.stack([unit((prints[labels == k] * secs[labels == k, None]).sum(0)) for k in ids])
+        return ids, cents
+
+    ids, cents = centroids()  # refinement: move each voice print to its closest speaker
+    labels[big] = ids[np.argmax(prints[big] @ cents.T, axis=1)]
+    ids, cents = centroids()
+    nxt = labels.max() + 1
+    for i in np.flatnonzero(labels < 0):  # small voice prints: closest speaker, or a new one
+        sim = prints[i] @ cents.T
+        if sim.max() >= merge_similarity:
+            labels[i] = ids[int(np.argmax(sim))]
+        else:
+            labels[i] = nxt
+            nxt += 1
+    return labels
+
+
 def main(cfg: Section, args):
     lay = layout(cfg)
-    clips = {r["id"]: r for r in read_jsonl(lay.filtered)}
-    if not clips:
-        raise SystemExit("no filtered clips: run the filter step first")
-    groups: dict[tuple[str, int], list[np.ndarray]] = defaultdict(list)
-    group_clips: dict[tuple[str, int], list[str]] = defaultdict(list)
-    vids = sorted({r["video_id"] for r in clips.values()})
-    with StepBar("cluster (embeddings)", len(vids)) as bar:
-        for vid in vids:
-            z = np.load(lay.speaker_emb(vid))
-            for cid, emb, spk in zip(z["ids"].tolist(), z["embeddings"], z["local_speaker"].tolist(), strict=True):
-                if cid in clips:
-                    groups[(vid, int(spk))].append(emb.astype(np.float32))
-                    group_clips[(vid, int(spk))].append(cid)
-            bar.advance()
-    keys = list(groups)
-    means = np.stack([np.mean(groups[k], axis=0) for k in keys])
-    means /= np.linalg.norm(means, axis=1, keepdims=True) + 1e-9
-    labels = cluster_embeddings(means, cfg.speakers.merge_similarity)
+    sp = cfg.speakers
+    keys, prints, secs, members, rows = voice_prints(cfg)
+    if not keys:
+        raise SystemExit("no chunk embeddings: run segment and speaker_check first")
+    labels = assign_speakers(prints, secs, sp.merge_similarity, sp.min_group_sec)
 
-    # stable global ids ordered by amount of speech
     hours: dict[int, float] = defaultdict(float)
     for k, lab in zip(keys, labels, strict=True):
-        hours[int(lab)] += sum(clips[c]["duration"] for c in group_clips[k]) / 3600
-    order = sorted(hours, key=lambda lab: -hours[lab])
-    gid = {lab: f"spk_{i:05d}" for i, lab in enumerate(order)}
-
-    videos_meta = {v["id"]: v for v in read_jsonl(lay.videos)}
-    speakers: dict[str, dict] = {}
-    assignment: dict[str, str] = {}
+        hours[int(lab)] += sum(rows[c]["duration"] for c in members[k]) / 3600
+    videos_meta = {v["id"]: v for v in videos(cfg)}
+    spk: dict[int, dict] = {}
     for k, lab in zip(keys, labels, strict=True):
-        g = gid[int(lab)]
-        sp = speakers.setdefault(g, {"id": g, "clips": [], "videos": set(), "channels": set(), "hours": 0.0})
-        sp["clips"].extend(group_clips[k])
-        sp["videos"].add(k[0])
+        s = spk.setdefault(int(lab), {"clips": [], "videos": set(), "channels": set()})
+        s["clips"].extend(members[k])
+        s["videos"].add(k[0])
         ch = (videos_meta.get(k[0]) or {}).get("channel")
         if ch:
-            sp["channels"].add(ch)
-        for c in group_clips[k]:
-            assignment[c] = g
+            s["channels"].add(ch)
 
-    classifier = GenderClassifier(cfg.speakers.gender_model)
+    classifier = GenderClassifier(sp.gender_model)
     rng = random.Random(0)
-    bar = StepBar("cluster (gender)", len(speakers), unit="speakers").start()
-    for sp in speakers.values():
-        bar.advance()
-        sample = rng.sample(sp["clips"], min(cfg.speakers.gender_samples, len(sp["clips"])))
-        probs = []
-        for cid in sample:
-            wav, sr = read_audio(clips[cid]["path"])
-            probs.append(classifier.female_prob(resample(wav, sr, 16000)))
-        pf = float(np.mean(probs))
-        sp["gender"] = "female" if pf >= 0.5 else "male"
-        sp["gender_confidence"] = round(abs(pf - 0.5) * 2, 3)
-        sp["hours"] = round(sum(clips[c]["duration"] for c in sp["clips"]) / 3600, 4)
-        sp["n_clips"] = len(sp["clips"])
-        sp["videos"] = sorted(sp["videos"])
-        sp["channels"] = sorted(sp["channels"])
-        del sp["clips"]
-    bar.close()
-    write_json(lay.speakers, {"speakers": sorted(speakers.values(), key=lambda s: -s["hours"]),
-                              "assignment": assignment})
-    n_f = sum(s["gender"] == "female" for s in speakers.values())
-    logger.info(f"{len(keys)} per-video speakers -> {len(speakers)} global speakers "
-                f"({n_f} female / {len(speakers) - n_f} male)")
+    with StepBar("cluster (gender)", len(spk), unit="speakers") as bar:
+        for s in spk.values():
+            longest = sorted(s["clips"], key=lambda c: -rows[c]["duration"])[: 4 * sp.gender_samples]
+            probs = []
+            for cid in rng.sample(longest, min(sp.gender_samples, len(longest))):
+                wav, sr = read_audio(rows[cid]["path"])
+                probs.append(classifier.female_prob(resample(wav, sr, 16000)))
+            pf = float(np.mean(probs))
+            s["gender"] = "female" if pf >= 0.5 else "male"
+            s["gender_confidence"] = round(abs(pf - 0.5) * 2, 3)
+            bar.advance()
+
+    order = sorted(spk, key=lambda lab: -hours[lab])
+    speakers, assignment = [], {}
+    for i, lab in enumerate(order, 1):
+        s = spk[lab]
+        sid = f"{s['gender'].upper()}_{i:05d}"
+        for c in s["clips"]:
+            assignment[c] = sid
+        speakers.append({"id": sid, "gender": s["gender"], "gender_confidence": s["gender_confidence"],
+                         "hours": round(hours[lab], 4), "n_clips": len(s["clips"]), "n_videos": len(s["videos"]),
+                         "videos": sorted(s["videos"]), "channels": sorted(s["channels"])})
+    write_json(lay.speakers, {"speakers": speakers, "assignment": assignment})
+    report(speakers)
+
+
+def report(speakers: list[dict]) -> None:
+    h = np.array([s["hours"] for s in speakers])
+    by_g = defaultdict(list)
+    for s in speakers:
+        by_g[s["gender"]].append(s["hours"])
+    logger.info(f"{len(speakers)} speakers, {h.sum():.1f} h | per speaker: mean {h.mean():.2f} h, median "
+                f"{np.median(h):.2f} h, min {h.min() * 60:.1f} min, max {h.max():.1f} h | speakers with >= 5 min: "
+                f"{(h >= 5 / 60).sum()}, >= 1 h: {(h >= 1).sum()}, >= 10 h: {(h >= 10).sum()}")
+    for g, hs in sorted(by_g.items()):
+        logger.info(f"  {g}: {len(hs)} speakers, {sum(hs):.1f} h ({sum(hs) / max(h.sum(), 1e-9):.0%})")
+    top = ", ".join(f"{s['id']} {s['hours']:.1f} h ({s['n_videos']} videos)" for s in speakers[:10])
+    logger.info(f"  largest: {top}")
 
 
 def load_speakers(cfg: Section) -> dict:

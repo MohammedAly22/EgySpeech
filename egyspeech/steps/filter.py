@@ -5,12 +5,12 @@ multi-speaker audio.
 """
 
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
 
 from egyspeech.config import Section
-from egyspeech.io import read_jsonl, write_json, write_jsonl
+from egyspeech.io import read_json, read_jsonl, write_json, write_jsonl
 from egyspeech.progress import StepBar
 from egyspeech.steps import layout, step_main, video_ids
 
@@ -58,7 +58,8 @@ def edge_db(r: dict) -> float | None:
 
 def reasons(r: dict, f: Section, s: Section) -> list[str]:
     out = []
-    if not s.min_sec <= r["duration"] <= s.max_sec:
+    lo, hi = (s.diar_min_sec, s.diar_max_sec) if s.get("method") == "diarization" else (s.min_sec, s.max_sec)
+    if not lo - 0.05 <= r["duration"] <= hi + 0.05:
         out.append("duration")
     for key, (metric, side, why) in RULES.items():
         limit = f.get(key)
@@ -72,36 +73,124 @@ def reasons(r: dict, f: Section, s: Section) -> list[str]:
     return out
 
 
+def clip_score(r: dict) -> float:
+    """Ranking inside a speaker's clips when capping: cleaner background and a purer voice first."""
+    return (r.get("dnsmos_bak") or 0.0) + (r.get("dnsmos_sig") or 0.0) + 2.0 * (r.get("window_similarity") or 0.0)
+
+
+def cap_speaker(rows: list[dict], cap_sec: float) -> list[dict]:
+    """At most cap_sec of one speaker: best clips first, round-robin over the speaker's episodes."""
+    if sum(r["duration"] for r in rows) <= cap_sec:
+        return rows
+    by_video: dict[str, list[dict]] = defaultdict(list)
+    for r in sorted(rows, key=clip_score, reverse=True):
+        by_video[r["video_id"]].append(r)
+    queues = sorted(by_video.values(), key=len, reverse=True)
+    chosen, total = [], 0.0
+    while queues and total < cap_sec:
+        nxt = []
+        for q in queues:
+            if total >= cap_sec:
+                break
+            r = q.pop(0)
+            chosen.append(r)
+            total += r["duration"]
+            if q:
+                nxt.append(q)
+        queues = nxt
+    return chosen
+
+
+def speaker_stats(rows: list[dict]) -> dict:
+    hours: dict[str, float] = defaultdict(float)
+    gender: dict[str, str] = {}
+    for r in rows:
+        hours[r.get("speaker_id") or "?"] += r["duration"] / 3600
+        gender[r.get("speaker_id") or "?"] = r.get("gender") or "?"
+    h = np.array(list(hours.values())) if hours else np.zeros(1)
+    by_g = defaultdict(lambda: [0, 0.0])
+    for s, x in hours.items():
+        by_g[gender[s]][0] += 1
+        by_g[gender[s]][1] += x
+    return {"clips": len(rows), "hours": round(float(h.sum()), 2), "speakers": len(hours),
+            "mean_hours": round(float(h.mean()), 3), "median_hours": round(float(np.median(h)), 3),
+            "min_hours": round(float(h.min()), 4), "max_hours": round(float(h.max()), 3),
+            "gender": {g: {"speakers": n, "hours": round(x, 2)} for g, (n, x) in sorted(by_g.items())}}
+
+
+def log_stats(title: str, st: dict) -> None:
+    g = ", ".join(f"{k} {v['speakers']} speakers / {v['hours']:.1f} h" for k, v in st["gender"].items())
+    logger.info(f"{title}: {st['clips']:,} clips, {st['hours']:.1f} h, {st['speakers']:,} speakers | hours per "
+                f"speaker: mean {st['mean_hours']:.2f}, median {st['median_hours']:.2f}, min "
+                f"{st['min_hours'] * 60:.1f} min, max {st['max_hours']:.2f} | {g}")
+
+
 def main(cfg: Section, args):
     lay = layout(cfg)
     rows = load_joined(cfg)
     if not rows:
-        raise SystemExit("nothing to filter: run segment, quality and speaker_check first")
+        raise SystemExit("nothing to filter: run quality first (and segment / speaker_check, or pull_chunks)")
+    assignment, genders = {}, {}
+    if lay.speakers.exists():
+        spk = read_json(lay.speakers)
+        assignment = spk["assignment"]
+        genders = {s["id"]: s["gender"] for s in spk["speakers"]}
+    for r in rows:
+        r["speaker_id"] = assignment.get(r["id"])
+        r["gender"] = genders.get(r["speaker_id"])
     counts: Counter[str] = Counter()
-    kept = []
+    passed = []
     for r in rows:
         why = reasons(r, cfg.filter, cfg.segmentation)
         counts.update(why)
         if not why:
-            kept.append(r)
+            passed.append(r)
+
+    max_hours = args.max_hours if args.max_hours is not None else cfg.filter.get("max_hours_per_speaker")
+    if max_hours and not assignment:
+        raise SystemExit("speaker cap needs speaker IDs (meta/speakers.json): run the cluster step or pull_chunks")
+    if max_hours:
+        by_spk: dict[str, list[dict]] = defaultdict(list)
+        for r in passed:
+            by_spk[r["speaker_id"] or r["id"]].append(r)
+        kept = [r for rs in by_spk.values() for r in cap_speaker(rs, float(max_hours) * 3600)]
+    else:
+        kept = passed
+
+    st_all, st_q, st_k = speaker_stats(rows), speaker_stats(passed), speaker_stats(kept)
+    log_stats("all clips", st_all)
+    log_stats("quality passed", st_q)
+    logger.info(f"quality rejections: {dict(counts)}")
+    if max_hours:
+        capped = sum(1 for rs in by_spk.values() if sum(r["duration"] for r in rs) > float(max_hours) * 3600)
+        log_stats(f"capped at {max_hours:g} h/speaker ({capped} speakers capped)", st_k)
+    if args.dry_run:
+        logger.info("--dry-run: nothing written")
+        return
+
     write_jsonl(lay.filtered, kept)
-    if cfg.storage.delete_rejected_clips:
+    if cfg.storage.delete_rejected_clips:  # only clips that failed the quality filter (the cap can change)
         from pathlib import Path
 
-        kept_ids = {r["id"] for r in kept}
+        passed_ids = {r["id"] for r in passed}
         removed = 0
         for r in rows:
-            if r["id"] not in kept_ids and Path(r["path"]).exists():
+            if r["id"] not in passed_ids and Path(r["path"]).exists():
                 Path(r["path"]).unlink()
                 removed += 1
         logger.info(f"deleted the audio of {removed} rejected clips (storage.delete_rejected_clips)")
-    total_h = sum(r["duration"] for r in rows) / 3600
-    kept_h = sum(r["duration"] for r in kept) / 3600
-    report = {"clips": len(rows), "hours": round(total_h, 3), "kept_clips": len(kept),
-              "kept_hours": round(kept_h, 3), "rejections": dict(counts), "thresholds": dict(cfg.filter)}
+    report = {"clips": len(rows), "hours": st_all["hours"], "kept_clips": len(kept), "kept_hours": st_k["hours"],
+              "quality_passed_hours": st_q["hours"], "rejections": dict(counts), "max_hours_per_speaker": max_hours,
+              "speakers_all": st_all, "speakers_quality": st_q, "speakers_kept": st_k,
+              "thresholds": dict(cfg.filter)}
     write_json(lay.filter_report, report)
-    logger.info(f"kept {len(kept)}/{len(rows)} clips = {kept_h:.1f}/{total_h:.1f} h; rejections: {dict(counts)}")
+    logger.info(f"wrote {lay.filtered} ({len(kept):,} clips, {st_k['hours']:.1f} h): next `transcribe`")
 
 
 if __name__ == "__main__":
-    step_main(main)
+    def _args(p):
+        p.add_argument("--max-hours", type=float, default=None,
+                       help="cap per speaker in hours (default: filter.max_hours_per_speaker; 0 = no cap)")
+        p.add_argument("--dry-run", action="store_true", help="only print the statistics")
+
+    step_main(main, _args)

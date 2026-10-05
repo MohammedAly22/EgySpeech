@@ -60,6 +60,12 @@ diarization:
 
 # ------------------------------------------------------------ segmentation ----
 segmentation:
+  method: diarization           # diarization = one chunk per single-speaker diarization turn | vad = pause planner
+  diar_min_sec: 2.0             # diarization method: shorter turns are dropped...
+  diar_max_sec: 30.0            # ...longer turns are split at their quietest moments
+  diar_max_gap_sec: 0.6         # silence inside one speaker's turn that is bridged
+  diar_pad_sec: 0.1             # padding added where nobody speaks (never into another speaker)
+  # vad method:
   min_sec: 5.0                  # TTS-friendly clip length
   max_sec: 30.0
   target_sec: 14.0              # preferred length when several cut plans are possible
@@ -107,6 +113,7 @@ filter:
   max_clip_ratio: null              # Clipping
   max_edge_db: null                 # Edge loudness (segmentation already cuts in silences)
   drop_weak_cuts: false
+  max_hours_per_speaker: 15         # speaker cap applied after the thresholds (override: filter --max-hours N)
 
 # --------------------------------------------------------- transcription ----
 transcription:
@@ -166,14 +173,16 @@ alignment:
 # ------------------------------------------------------------- speakers ----
 speakers:
   embedding_model: nvidia/speakerverification_en_titanet_large
-  merge_similarity: 0.65        # cosine similarity to merge per-video speakers into one global speaker
+  merge_similarity: 0.65        # cosine similarity: two voice prints at least this similar = the same person
+  min_group_sec: 30.0           # voice prints with less speech are attached to the closest speaker afterwards
+  outlier_similarity: 0.5       # chunks less similar than this to their voice print are left out of it
   gender_model: alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech
   gender_samples: 8             # clips classified per global speaker
 
 # ------------------------------------------------------------- balancing ----
 balance:
-  max_hours_per_speaker: 8.0    # cap per global speaker
-  max_speaker_share: 0.03       # ... and at most this share of the whole dataset
+  max_hours_per_speaker: null   # optional extra cap here (speakers are capped by `filter --max-hours`)
+  max_speaker_share: null       # optional: at most this share of the whole dataset per speaker
   target_total_hours: null      # stop at this size (null = keep everything that passes)
   test_speakers: 20             # unseen speakers held out for the test split
   test_max_minutes_per_speaker: 5
@@ -188,14 +197,14 @@ analysis:
 # ------------------------------------------------------------------ hub ----
 # push_chunks / pull_chunks: the filtered clips (before transcription) as a Hugging Face dataset
 hub:
-  chunks_repo_id: your-username/egyspeech-chunks
+  chunks_repo_id: MohammedAly22/EgySpeech-V1   # chunks go to chunks/ of the release repository
   private: true
   shard_mb: 500                 # audio per Parquet shard (whole videos per shard)
   shards_per_commit: 4          # shards uploaded per commit (also the local disk needed: ~2 GB)
 
 # --------------------------------------------------------------- publish ----
 publish:
-  enabled: false                # set true to push to the Hugging Face Hub
-  repo_id: your-username/egyptian-arabic-speech
+  enabled: true                 # push the final dataset to the Hugging Face Hub
+  repo_id: MohammedAly22/EgySpeech-V1   # final dataset in data/, the untranscribed chunks in chunks/
   private: true                 # private until you decide to release
   max_shard_size: 500MB
