@@ -128,7 +128,7 @@ def main(cfg: Section, args):
     h = cfg.hub
     repo = h.chunks_repo_id
     if not repo or repo.startswith("your-username/"):
-        raise SystemExit("set hub.chunks_repo_id in the config (e.g. MohammedAly22/EgySpeech-V1)")
+        raise SystemExit("set hub.chunks_repo_id in the config (e.g. mohammedaly22/EgySpeech-V1)")
     rows = chunk_rows(cfg)
     if not rows:
         raise SystemExit("no chunks: run segment, speaker_check and cluster first")

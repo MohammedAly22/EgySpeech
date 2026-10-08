@@ -146,7 +146,7 @@ python -m egyspeech.cli segment --watch              # segment while diarize run
 ```bash
 # 1. machine with the episodes (laptop; configs/local.yaml)
 python -m egyspeech.cli run --stage local          # diarization chunks + global speaker IDs + gender
-python -m egyspeech.cli push_chunks                # all chunks -> chunks/ of MohammedAly22/EgySpeech-V1 (private)
+python -m egyspeech.cli push_chunks                # all chunks -> chunks/ of mohammedaly22/EgySpeech-V1 (private)
 
 # 2. GPU machine
 python -m egyspeech.cli pull_chunks
@@ -156,7 +156,7 @@ python -m egyspeech.cli filter --max-hours 15      # write the selection
 python -m egyspeech.cli run --stage gpu --from transcribe  # transcribe -> align -> balance -> analysis -> publish
 ```
 
-The chunk dataset (`load_dataset("MohammedAly22/EgySpeech-V1", "chunks")`) has every chunk with its speaker ID,
+The chunk dataset (`load_dataset("mohammedaly22/EgySpeech-V1", "chunks")`) has every chunk with its speaker ID,
 gender, TitaNet embedding and segmentation info; `publish` adds the final transcribed dataset as the default
 config (`data/`) of the same private repository. Set `EGYSPEECH_CONFIG=configs/local.yaml` (or pass `--config`)
 to use another config file.

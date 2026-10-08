@@ -197,7 +197,7 @@ analysis:
 # ------------------------------------------------------------------ hub ----
 # push_chunks / pull_chunks: the filtered clips (before transcription) as a Hugging Face dataset
 hub:
-  chunks_repo_id: MohammedAly22/EgySpeech-V1   # chunks go to chunks/ of the release repository
+  chunks_repo_id: mohammedaly22/EgySpeech-V1   # chunks go to chunks/ of the release repository
   private: true
   shard_mb: 500                 # audio per Parquet shard (whole videos per shard)
   shards_per_commit: 4          # shards uploaded per commit (also the local disk needed: ~2 GB)
@@ -205,6 +205,6 @@ hub:
 # --------------------------------------------------------------- publish ----
 publish:
   enabled: true                 # push the final dataset to the Hugging Face Hub
-  repo_id: MohammedAly22/EgySpeech-V1   # final dataset in data/, the untranscribed chunks in chunks/
+  repo_id: mohammedaly22/EgySpeech-V1   # final dataset in data/, the untranscribed chunks in chunks/
   private: true                 # private until you decide to release
   max_shard_size: 500MB
