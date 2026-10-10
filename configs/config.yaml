@@ -122,7 +122,7 @@ filter:
 # --------------------------------------------------------- transcription ----
 transcription:
   backend: qwencleo             # qwencleo | cohere | parakeet | llm
-  batch_size: 16
+  batch_size: 32                # clips per GPU batch (24 GB GPU; lower if out of memory)
   language: Arabic              # qwencleo: "Arabic" or null (auto); cohere: uses "ar"
   qwencleo:
     model: mohammedaly22/QwenCleo-ASR
@@ -170,7 +170,7 @@ transcription:
 # ------------------------------------------------------------ alignment ----
 alignment:
   model: MahmoudAshraf/mms-300m-1130-forced-aligner   # MMS CTC, romanized (uroman) -> works for Arabic + English
-  batch_size: 16
+  batch_size: 32                # clips per alignment batch (GPU)
   min_score: -3.0               # mean per-character log-prob; lower = transcript/audio mismatch
   min_edge_sec: 0.03            # first word must start / last word must end at least this far from the clip edge
 
