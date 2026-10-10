@@ -205,6 +205,6 @@ hub:
 # --------------------------------------------------------------- publish ----
 publish:
   enabled: true                 # push the final dataset to the Hugging Face Hub
-  repo_id: mohammedaly22/EgySpeech-V1   # final dataset in data/, the untranscribed chunks in chunks/
+  repo_id: mohammedaly22/EgySpeech-V1   # final dataset goes to a NEW private repo <repo_id>-<hours>h, e.g. EgySpeech-V1-712h
   private: true                 # private until you decide to release
   max_shard_size: 500MB

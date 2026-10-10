@@ -11,7 +11,6 @@ import logging
 from egyspeech.config import Section
 from egyspeech.io import read_json, read_jsonl
 from egyspeech.steps import layout, step_main
-from egyspeech.steps.push_chunks import CHUNKS_CONFIG
 
 logger = logging.getLogger("publish")
 
@@ -57,7 +56,6 @@ configs:
     path: data/validation-*
   - split: test
     path: data/test-*
-{CHUNKS_CONFIG}
 tags:
 - egyptian-arabic
 - code-switching
@@ -131,9 +129,12 @@ def main(cfg: Section, args):
     if not splits:
         raise SystemExit("no final splits: run the balance step first")
     ds = DatasetDict(splits)
-    logger.info(f"pushing {', '.join(f'{k}={len(v)}' for k, v in ds.items())} to {p.repo_id} "
+    # a new repository per release, named by its size: the base repository (raw chunks) stays untouched
+    hours = sum(sum(r["duration"] for r in read_jsonl(lay.split(n))) for n in splits) / 3600
+    repo = f"{p.repo_id}-{round(hours)}h"
+    logger.info(f"pushing {', '.join(f'{k}={len(v)}' for k, v in ds.items())} to {repo} "
                 f"({'private' if p.private else 'PUBLIC'})")
-    ds.push_to_hub(p.repo_id, private=bool(p.private), max_shard_size=p.max_shard_size)
+    ds.push_to_hub(repo, private=bool(p.private), max_shard_size=p.max_shard_size)
 
     api = HfApi()
     stats = read_json(lay.stats) if lay.stats.exists() else None
@@ -141,15 +142,15 @@ def main(cfg: Section, args):
     if stats:
         lay.hf.mkdir(parents=True, exist_ok=True)
         card = lay.hf / "README.md"
-        card.write_text(dataset_card(cfg, stats, p.repo_id, graphs), encoding="utf-8")
-        api.upload_file(path_or_fileobj=str(card), path_in_repo="README.md", repo_id=p.repo_id, repo_type="dataset")
+        card.write_text(dataset_card(cfg, stats, repo, graphs), encoding="utf-8")
+        api.upload_file(path_or_fileobj=str(card), path_in_repo="README.md", repo_id=repo, repo_type="dataset")
         (lay.hf / "stats.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
-        api.upload_file(path_or_fileobj=str(lay.hf / "stats.json"), path_in_repo="stats.json", repo_id=p.repo_id,
+        api.upload_file(path_or_fileobj=str(lay.hf / "stats.json"), path_in_repo="stats.json", repo_id=repo,
                         repo_type="dataset")
     if graphs:
-        api.upload_folder(folder_path=str(lay.graphs), path_in_repo="graphs", repo_id=p.repo_id,
+        api.upload_folder(folder_path=str(lay.graphs), path_in_repo="graphs", repo_id=repo,
                           repo_type="dataset", allow_patterns=["*.png", "*.html"])
-    logger.info(f"done: https://huggingface.co/datasets/{p.repo_id}")
+    logger.info(f"done: https://huggingface.co/datasets/{repo}")
 
 
 if __name__ == "__main__":

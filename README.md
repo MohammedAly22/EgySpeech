@@ -157,8 +157,8 @@ python -m egyspeech.cli run --stage gpu --from transcribe  # transcribe -> align
 ```
 
 The chunk dataset (`load_dataset("mohammedaly22/EgySpeech-V1", "chunks")`) has every chunk with its speaker ID,
-gender, TitaNet embedding and segmentation info; `publish` adds the final transcribed dataset as the default
-config (`data/`) of the same private repository. Set `EGYSPEECH_CONFIG=configs/local.yaml` (or pass `--config`)
+gender, TitaNet embedding and segmentation info; `publish` pushes the final transcribed dataset to a new private
+repository named by its size, `mohammedaly22/EgySpeech-V1-<hours>h`; the chunk repository stays untouched. Set `EGYSPEECH_CONFIG=configs/local.yaml` (or pass `--config`)
 to use another config file.
 
 ### 5 · Explore every step in Jupyter
