@@ -76,6 +76,10 @@ def run_step(step: str, cfg: Section, extra: list[str] | None = None) -> int:
     print(f"\n==> [{step}] env={env_name}", flush=True)
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": str(REPO_ROOT)}
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # cloud templates often set HF_HUB_ENABLE_HF_TRANSFER=1; downloads then fail in envs without hf_transfer
+    if env.get("HF_HUB_ENABLE_HF_TRANSFER") not in (None, "", "0") and not any(
+            (Path(python).parent.parent / "lib").glob("python3*/site-packages/hf_transfer")):
+        env.pop("HF_HUB_ENABLE_HF_TRANSFER")
     # ffmpeg / sox of the env on PATH, as `conda activate` would do
     env["PATH"] = str(Path(python).parent) + os.pathsep + env.get("PATH", "")
     code = 0
