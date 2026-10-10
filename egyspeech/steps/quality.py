@@ -177,8 +177,7 @@ def main(cfg: Section, args):
                              done=lambda v: lay.quality(v["id"]).exists())
     chunks = {v["id"]: read_jsonl(lay.chunks_meta(v["id"])) for v in pending}
     n_clips = sum(len(c) for c in chunks.values())
-    logger.info(f"{n_done} done, {len(pending)} videos / {n_clips} clips to score "
-                f"({cfg.quality.workers} DNSMOS processes + UTMOS on GPU)")
+    logger.info(f"{n_done} done, {len(pending)} videos / {n_clips} clips to score")
     if not pending:
         return
     if cfg.quality.get("fast", True):
