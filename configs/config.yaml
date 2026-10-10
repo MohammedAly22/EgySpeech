@@ -122,7 +122,7 @@ filter:
 # --------------------------------------------------------- transcription ----
 transcription:
   backend: qwencleo             # qwencleo | cohere | parakeet | llm
-  batch_size: 32                # clips per GPU batch (24 GB GPU; lower if out of memory)
+  batch_size: 64                # clips per GPU batch (~16 GB on a 24 GB GPU; lower if out of memory)
   language: Arabic              # qwencleo: "Arabic" or null (auto); cohere: uses "ar"
   qwencleo:
     model: mohammedaly22/QwenCleo-ASR
