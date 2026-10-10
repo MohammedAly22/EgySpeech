@@ -93,6 +93,10 @@ storage:
 
 # -------------------------------------------------------------- quality ----
 quality:
+  fast: true                    # DNSMOS P.835 batched on the GPU (false = torchmetrics on CPU workers, + P.808)
+  utmos: false                  # also compute UTMOS (not used by the filter; slow)
+  load_threads: 12              # threads reading / resampling clips for the GPU
+  dnsmos_batch: 64              # 9 s windows per GPU batch (~70 MB each: 64 = ~5 GB; 16 on a 6 GB GPU)
   workers: 8                    # DNSMOS CPU processes (one thread each)
   batch_size: 32                # UTMOS batch (GPU)
   speaker_window_sec: 3.0       # TitaNet windows for the single-speaker check

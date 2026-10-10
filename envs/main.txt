@@ -5,6 +5,7 @@ yt-dlp>=2026.8.19
 audio-separator[gpu]>=0.47
 silero-vad>=6.2
 onnxruntime-gpu>=1.20
+onnx2torch-py313>=1.6     # DNSMOS model -> PyTorch (runs on the GPU with any CUDA build of torch)
 torchmetrics[audio]>=1.9
 librosa>=0.11
 audioread>=3.0            # audio-separator imports it (librosa 1.0 no longer depends on it)
